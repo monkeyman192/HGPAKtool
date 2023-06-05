@@ -1,0 +1,13 @@
+# pak files (for testing)
+*.pak
+
+# Ignore the default extract directory.
+EXTRACTED/
+
+# Ignore any dll's etc so that they are not included in source.
+*.dll
+*.dylib
+*.so
+*.exe
+
+__pycache__/
