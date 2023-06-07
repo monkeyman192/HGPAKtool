@@ -4,11 +4,19 @@ from io import BytesIO
 import os
 import os.path as op
 import struct
+import sys
 import time
 
-# Local imports
-from OodleCompressor import OodleCompressor, OodleDecompressionError
-from utils import OSCONST
+# Unused for now, but if it's confirmed that switch still uses oodle this can be
+# used if switch paks are being decompressed.
+# from OodleCompressor import OodleCompressor, OodleDecompressionError
+# from utils import OSCONST
+
+try:
+    import lz4.block
+except ModuleNotFoundError:
+    print("You need to install lz4 for this code to work. Please run `pip install lz4`")
+    sys.exit(1)
 
 
 FILEINFO = namedtuple("FILEINFO", ["hash1", "hash2", "startOffset", "decompressed_size"])
@@ -125,9 +133,8 @@ class HGPakChunkIndex():
 
 
 class HGPakFile():
-    def __init__(self, fobj, decompressor: OodleCompressor):
+    def __init__(self, fobj):
         self.fobj = fobj
-        self.decompressor = decompressor
         self.header: HGPakHeader = HGPakHeader()
         self.fileIndex: HGPakFileIndex = HGPakFileIndex()
         self.chunkIndex: HGPakChunkIndex = HGPakChunkIndex()
@@ -190,19 +197,14 @@ class HGPakFile():
     def decompress_chunk(self, chunkIdx: int):
         self.fobj.seek(self.chunkIndex.chunk_offset[chunkIdx])
         data = self.fobj.read(self.chunkIndex.chunk_sizes[chunkIdx])
-        # Sometimes it seems like the game doesn't compress every chunk.
-        # Check the first 2 bytes for the oodle Mermaid "magic".
-        if data[:2] == b"\x8C\x0A":
-            try:
-                return self.decompressor.decompress(
-                    data,
-                    self.chunkIndex.chunk_sizes[chunkIdx],
-                    DECOMPRESSED_CHUNK_SIZE
-                )
-            except OodleDecompressionError:
-                return None
-        else:
-            return data
+        try:
+            return lz4.block.decompress(
+                data,
+                uncompressed_size=DECOMPRESSED_CHUNK_SIZE
+            )
+        except:
+            # Something went wrong. For now just raise it.
+            raise
 
     def extract_all(self, out_dir: str = "EXTRACTED"):
         for fpath in self.files:
@@ -249,9 +251,9 @@ class HGPakFile():
 
 
 if __name__ == '__main__':
-    od = OodleCompressor(op.join(op.dirname(__file__), OSCONST.LIB_NAME))
-    with open("NMSARC.MeshMisc.pak", "rb") as pak:
-        f = HGPakFile(pak, od)
+    # od = OodleCompressor(op.join(op.dirname(__file__), OSCONST.LIB_NAME))
+    with open("NMSARC.Globals.pak", "rb") as pak:
+        f = HGPakFile(pak)
         f.read()
         t1 = time.time()
         f.extract_all()
