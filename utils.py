@@ -38,9 +38,9 @@ class OSConstMap():
 OSCONST = OSConstMap()
 
 # Binaries urls
-OSCONST.LIB_URL_WIN = "https://github.com/WorkingRobot/OodleUE/blob/main/Engine/Source/Programs/Shared/EpicGames.Oodle/Sdk/2.9.3/win/redist/oo2core_9_win64.dll"
+OSCONST.LIB_URL_WIN = "https://raw.githubusercontent.com/WorkingRobot/OodleUE/main/Engine/Source/Programs/Shared/EpicGames.Oodle/Sdk/2.9.3/win/redist/oo2core_9_win64.dll"
 # OSCONST.LIB_URL_WIN = "https://origin.warframe.com/origin/E926E926/Tools/Oodle/x64/final/oo2core_9_win64.dll.F2DB01967705B62AECEF3CD3E5A28E4D.lzma"
-OSCONST.LIB_URL_MAC = "https://github.com/WorkingRobot/OodleUE/blob/main/Engine/Source/Runtime/OodleDataCompression/Sdks/2.9.8/lib/Mac/liboo2coremac64.2.9.8.dylib"
+OSCONST.LIB_URL_MAC = "https://raw.githubusercontent.com/WorkingRobot/OodleUE/main/Engine/Source/Runtime/OodleDataCompression/Sdks/2.9.8/lib/Mac/liboo2coremac64.2.9.8.dylib"
 
 # Binaries names
 OSCONST.LIB_NAME_WIN = "oo2core_9_win64.dll"
