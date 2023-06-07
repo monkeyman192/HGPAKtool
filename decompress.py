@@ -204,9 +204,15 @@ class HGPakFile():
                 data,
                 uncompressed_size=DECOMPRESSED_CHUNK_SIZE
             )
-        except:
-            # Something went wrong. For now just raise it.
-            raise
+        except lz4.block.LZ4BlockError:
+            if len(data) == DECOMPRESSED_CHUNK_SIZE:
+                # In this case the block was just not compressed. Return it.
+                return data
+            else:
+                # Something went wrong. For now just raise it.
+                print(f"Failed to decompress block {chunkIdx}")
+                print(f"Compressed block was 0x{len(data):X} bytes long")
+                raise
 
     def extract_all(self, out_dir: str = "EXTRACTED"):
         for fpath in self.files:
