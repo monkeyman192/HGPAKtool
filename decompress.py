@@ -146,6 +146,8 @@ class HGPakFile():
 
     def read(self):
         self.header.read(self.fobj)
+        if self.header.isCompressed is False:
+            raise Exception("Cannot currently load uncompressed paks. Come back later!")
         self.fileIndex.read(self.header.fileCount, self.fobj)
         # Determine the expected number of chunks and see if this matches
         found_chunk_count = determine_bins(
