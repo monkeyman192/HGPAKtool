@@ -1,18 +1,14 @@
 from collections import namedtuple
 from functools import lru_cache
 from io import BytesIO
-import lzma
 import os
+import os.path as op
 import struct
 import time
-import urllib.request
 
 # Local imports
 from OodleCompressor import OodleCompressor, OodleDecompressionError
-
-# Oodle core link:
-DLL_URL = "https://origin.warframe.com/origin/E926E926/Tools/Oodle/x64/final/oo2core_9_win64.dll.F2DB01967705B62AECEF3CD3E5A28E4D.lzma"
-DLL_NAME = "oo2core_9_win64.dll"
+from utils import OSCONST
 
 
 FILEINFO = namedtuple("FILEINFO", ["hash1", "hash2", "startOffset", "decompressed_size"])
@@ -35,13 +31,6 @@ def reqChunkBytes(chunk_size: int):
 def determine_bins(num_bytes: int, bin_size: int = 0x10):
     """ Determine the number of bins required to hold the requested number of bytes. """
     return (num_bytes + bin_size - 1) // bin_size
-
-
-def download_dll(out_dir: str = ""):
-    with urllib.request.urlopen(DLL_URL) as f:
-        decompressed = lzma.decompress(f.read())
-    with open(os.path.join(out_dir, DLL_NAME), "wb") as f:
-        f.write(decompressed)
 
 
 class File():
@@ -251,16 +240,16 @@ class HGPakFile():
                 else:
                     _data.write(decompressed)
         # Now write the file out.
-        _export_path, fname = os.path.split(fpath)
-        dir_ = os.path.join(out_dir, _export_path)
+        _export_path, fname = op.split(fpath)
+        dir_ = op.join(out_dir, _export_path)
         if dir_:
             os.makedirs(dir_, exist_ok=True)
-        with open(os.path.join(dir_, fname), "wb") as f:
+        with open(op.join(dir_, fname), "wb") as f:
             f.write(_data.getvalue())
 
 
 if __name__ == '__main__':
-    od = OodleCompressor("./oo2core_9_win64.dll")
+    od = OodleCompressor(op.join(op.dirname(__file__), OSCONST.LIB_NAME))
     with open("NMSARC.MeshMisc.pak", "rb") as pak:
         f = HGPakFile(pak, od)
         f.read()
