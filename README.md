@@ -20,6 +20,17 @@ python -m pip install lz4
 ```
 (installation may vary system to system depending on your python installation)
 
-Currently you need to run the `decompress.py` file directly with python (eg. `python3.9 decompress.py`). Note that python 3.9+ is required to run this code.
-Inside the file at the bottom you may specify the path to the .pak file that you want to extract all the files for.
-Currently this is the only easy thing to do with the script, but I'll hopefully add more functionality in the future.
+Note that this code requires python 3.9+ to run. If you have a lower version you'll need to install a newer one.
+
+### Drag and drop functionality.
+
+The `HGPAKTool.bat` file provides drag and drop functionality.
+To utilise this, first open a console and enter `python --version`. This should show a version that is at least 3.9.X.
+If it doesn't show a version this high, or has an error that `python` is invalid, you may need to install python, or find the command which calls python on your system. Other options are `python3`, or `python3.X` where `X` is the installed version you have.
+If you have one of the `python3` commands working, but not `python`, then you will need to change the value in `HGPAKTool.bat` to be the one which works.
+
+Dragging one or more .pak files onto the .bat should unpack them in the current directory under a folder called `EXTRACTED`. Note that this name currently cannot be changed.
+
+Dragging multiple files which are not .pak files onto the bat will pack them up and compress them for MAC.
+NOTE: compressed switch packing currently not supported.
+There is currently also an issue with repacking archives when compressed.
