@@ -1,15 +1,16 @@
 __author__ = "monkeyman192"
-__version__ = "0.2"
+__version__ = "0.3"
 
 import argparse
 import array
 from collections import namedtuple
 from functools import lru_cache
+import hashlib
 from io import BytesIO, SEEK_SET, SEEK_CUR, SEEK_END
 import json
 import os
 import os.path as op
-import secrets
+import pathlib
 import struct
 import sys
 import time
@@ -33,6 +34,10 @@ CHUNKINFO = namedtuple("CHUNKINFO", ["size", "offset"])
 # The game decompresses chunks to this size blocks (128kb)
 DECOMPRESSED_CHUNK_SIZE = 0x20000
 CLEAN_BYTES = b"\x00" * DECOMPRESSED_CHUNK_SIZE
+
+
+FILE_ITERATOR_TYPE_DATA = 0
+FILE_ITERATOR_TYPE_HASH = 1
 
 
 class InvalidFileException(Exception):
@@ -62,6 +67,52 @@ def padding(x: int):
     """ Determine the number of bytes required to pad the value to a 0x10
     byte boundary """
     return (0x10 - (x & 0xF)) & 0xF
+
+
+class Compressor():
+    def __init__(self, mode: str = "MAC"):
+        self.mode = mode
+        if self.mode == "MAC":
+            self.compressor = lz4.block
+        else:
+            self.compressor = OodleCompressor(
+                op.join(op.dirname(__file__), "lib", OSCONST.LIB_NAME)
+            )
+
+    def compress(self, buffer: memoryview) -> bytes:
+        if self.mode == "MAC":
+            return self.compressor.compress(
+                buffer,
+                store_size=False,
+            )
+        else:
+            return self.compressor.compress(
+                buffer.tobytes("A"),
+                DECOMPRESSED_CHUNK_SIZE
+            )
+
+    def decompress(self, data: bytes) -> bytes:
+        if self.mode == "MAC":
+            try:
+                return self.compressor.decompress(
+                        data,
+                        uncompressed_size=DECOMPRESSED_CHUNK_SIZE
+                    )
+            except lz4.block.LZ4BlockError:
+                if len(data) == DECOMPRESSED_CHUNK_SIZE:
+                    # In this case the block was just not compressed. Return it.
+                    return data
+        else:
+            try:
+                return self.compressor.decompress(
+                        data,
+                        len(data),
+                        DECOMPRESSED_CHUNK_SIZE
+                    )
+            except OodleDecompressionError:
+                if len(data) == DECOMPRESSED_CHUNK_SIZE:
+                    # In this case the block was just not compressed. Return it.
+                    return data
 
 
 class File():
@@ -100,12 +151,15 @@ class File():
 
 
 class FixedBuffer(BytesIO):
-    def __init__(self, main_buffer: BytesIO, compress: bool = False):
+    def __init__(self, main_buffer: BytesIO, compress: bool = False,
+                 compressor: Optional[Compressor] = None):
+        # NOTE: compressor can't ever actually be None. I need to clean this up.
         super().__init__(CLEAN_BYTES)
         # The number of bytes remaining until we have a full buffer
         self.remaining_bytes = DECOMPRESSED_CHUNK_SIZE
         self.main_buffer = main_buffer
         self.compress = compress
+        self.compressor = compressor
         # If we are compressing the data, keep track of the sizes of the
         # compressed data so we can write it into the TOC once we are done.
         self.compressed_block_sizes = []
@@ -116,27 +170,25 @@ class FixedBuffer(BytesIO):
         If the amount fills the buffer then flush and prefill the next buffer.
         """
         data_size = len(data)
-        self.write(data[:self.remaining_bytes])
+        written_bytes = self.write(data[:self.remaining_bytes])
         # Subtract of either the amount of bytes added or the number of
         # remaining bytes.
-        excess = data_size - self.remaining_bytes
-        self.remaining_bytes -= min(self.remaining_bytes, data_size)
+        self.remaining_bytes -= written_bytes
         if self.remaining_bytes == 0:
             self.write_to_main_buffer()
+            # Reset the number of remaining bytes
+            self.remaining_bytes = DECOMPRESSED_CHUNK_SIZE
         # If we have any extra bytes to write, write them now as the buffer is
         # currently empty.
-        self.remaining_bytes = excess
-        self.write(data[-self.remaining_bytes:])
+        if data_size > written_bytes:
+            new_written_bytes = self.write(data[written_bytes:])
+            self.remaining_bytes -= new_written_bytes
 
     def write_to_main_buffer(self):
         """ Write the data in the current buffer into the main buffer. """
-        if self.remaining_bytes == 0:
-            return
+        buffer = self.getbuffer()
         if self.compress:
-            compressed_bytes = lz4.block.compress(
-                self.getbuffer(),
-                store_size=False,
-            )
+            compressed_bytes = self.compressor.compress(buffer)
             compressed_size = len(compressed_bytes)
             if compressed_size >= DECOMPRESSED_CHUNK_SIZE:
                 # If compression has somehow made it worse, use the original
@@ -151,7 +203,8 @@ class FixedBuffer(BytesIO):
                 self.main_buffer.write(b"\x00" * padding(compressed_size))
             self.compressed_block_sizes.append(compressed_size)
         else:
-            self.main_buffer.write(self.getbuffer())
+            self.main_buffer.write(buffer)
+        buffer.release()
         # Once we have written this to the parent buffer, clear ourselves to be
         # ready for the next lot of bytes.
         self.clear()
@@ -163,9 +216,12 @@ class FixedBuffer(BytesIO):
         self.seek(0)
 
 
-def chunked_file_reader(fpaths: list[str]) -> Iterator[bytes]:
-    """ Yield chunks of size up to 0x20000 bytes from a file"""
+def chunked_file_reader(fpaths: list[str]) -> Iterator[tuple[bytes, int]]:
+    """ Yield chunks of size up to 0x20000 bytes from a file or the hash if the
+    file has completed.
+    """
     for fpath in fpaths:
+        hash_ = hashlib.md5()
         with open(fpath, "rb") as f:
             while True:
                 data = f.read(DECOMPRESSED_CHUNK_SIZE)
@@ -175,7 +231,9 @@ def chunked_file_reader(fpaths: list[str]) -> Iterator[bytes]:
                 if data_len != DECOMPRESSED_CHUNK_SIZE:
                     # Add on the padding bytes
                     data += b"\x00" * padding(data_len)
-                yield data
+                hash_.update(data)
+                yield (data, FILE_ITERATOR_TYPE_DATA)
+        yield (hash_.digest(), FILE_ITERATOR_TYPE_HASH)
 
 
 class HGPakHeader():
@@ -235,14 +293,14 @@ class HGPakChunkIndex():
 
 
 class HGPakFile():
-    def __init__(self, fobj, decompressor: Optional[OodleCompressor] = None):
+    def __init__(self, fobj, compressor: Compressor):
         self.fobj = fobj
         self.header: HGPakHeader = HGPakHeader()
         self.fileIndex: HGPakFileIndex = HGPakFileIndex()
         self.chunkIndex: HGPakChunkIndex = HGPakChunkIndex()
         self.files: dict[str, File] = {}
         self.filenames = list[str]
-        self.decompressor = decompressor
+        self.compressor = compressor
 
     @property
     def total_decompressed_size(self):
@@ -314,38 +372,8 @@ class HGPakFile():
     @lru_cache(maxsize = 128)
     def decompress_chunk(self, chunkIdx: int):
         self.fobj.seek(self.chunkIndex.chunk_offset[chunkIdx], SEEK_SET)
-        data = self.fobj.read(self.chunkIndex.chunk_sizes[chunkIdx])
-        if self.decompressor is None:
-            try:
-                return lz4.block.decompress(
-                    data,
-                    uncompressed_size=DECOMPRESSED_CHUNK_SIZE
-                )
-            except lz4.block.LZ4BlockError:
-                if len(data) == DECOMPRESSED_CHUNK_SIZE:
-                    # In this case the block was just not compressed. Return it.
-                    return data
-                else:
-                    # Something went wrong. For now just raise it.
-                    print(f"Failed to decompress block {chunkIdx}")
-                    print(f"Compressed block was 0x{len(data):X} bytes long")
-                    raise
-        else:
-            try:
-                return self.decompressor.decompress(
-                    data,
-                    len(data),
-                    DECOMPRESSED_CHUNK_SIZE
-                )
-            except OodleDecompressionError:
-                if len(data) == DECOMPRESSED_CHUNK_SIZE:
-                    # In this case the block was just not compressed. Return it.
-                    return data
-                else:
-                    # Something went wrong. For now just raise it.
-                    print(f"Failed to decompress block {chunkIdx}")
-                    print(f"Compressed block was 0x{len(data):X} bytes long")
-                    raise
+        chunk_size = self.chunkIndex.chunk_sizes[chunkIdx]
+        return self.compressor.decompress(self.fobj.read(chunk_size))
 
     def unpack_all(self, out_dir: str = "EXTRACTED"):
         i = 0
@@ -417,16 +445,20 @@ class HGPakFile():
         pass
 
 
-def pack(files: list[str], root_directory: str, compress: bool = False):
+def pack(files: list[str], root_directory: str, compress: bool = False,
+         compressor: Optional[Compressor] = None):
     """ Add a number of files to the archive"""
-    num_files = len(files)
     # First, let's create a buffer which will contain the data.
     buffer = BytesIO()
     # Then we'll write the header into it.
     # This will be incomplete as we'll need to fill in some data later.
     # The missing data will be the chunk_count and the data_offset as these
     # both require all the data to be known before they can be written.
-    buffer.write(struct.pack('<5s3xQQQ?7xQ', b"HGPAK", 2, num_files + 1, 0, compress, 0))
+    # We'll also not write the file count since this will be determined when we
+    # actually walk over any directories passed in.
+    buffer.write(struct.pack('<5s3xQQQ?7xQ', b"HGPAK", 2, 0, 0, compress, 0))
+
+    hashes: list[bytes] = []
 
     # Let's get information about all the files.
     # This will be the size and the path relative to the root_directory.
@@ -435,10 +467,31 @@ def pack(files: list[str], root_directory: str, compress: bool = False):
     file_sizes = array.array("Q")
     file_offsets = array.array("Q")
     filepath_data = b""
-    for i, _fpath in enumerate(files):
-        file_sizes.append(os.stat(_fpath).st_size)
-        filepath_data += op.relpath(_fpath, root_directory).encode() + b"\x0D\x0A"
+    fullpaths = []
+    for _fpath in files:
+        # If the path is a directory, we'll need to loop over it to get all the
+        # files within the directory.
+        # Add these full paths so that we may use this as the new path list
+        # to avoid some extra complexity in the logic.
+        if op.isdir(_fpath):
+            for root, _, files_ in os.walk(_fpath):
+                for fname in files_:
+                    fullpath = op.join(root, fname)
+                    fullpaths.append(fullpath)
+                    file_sizes.append(os.stat(fullpath).st_size)
+                    relpath = op.relpath(fullpath, root_directory)
+                    # On windows the path will have \'s instead of /'s. Fix it.
+                    if op.sep == "\\":
+                        relpath = pathlib.PureWindowsPath(relpath).as_posix()
+                    filepath_data += relpath.encode() + b"\x0D\x0A"
+        else:
+            fullpaths.append(_fpath)
+            file_sizes.append(os.stat(_fpath).st_size)
+            filepath_data += op.relpath(_fpath, root_directory).encode() + b"\x0D\x0A"
     filepath_data_len = len(filepath_data)
+
+    # Hash the filepath data.
+    hashes.append(hashlib.md5(filepath_data).digest())
 
     # Aggregate the above data to determine the offsets and total size of the
     # uncompressed data.
@@ -455,24 +508,31 @@ def pack(files: list[str], root_directory: str, compress: bool = False):
 
     # Now that we know the total chunk count and file count, we know how big the
     # "pre-data" data is.
-    data_offset = 0x30 + 0x20 * (num_files + 1) + compress * 0x8 * chunk_count
+    data_offset = 0x30 + 0x20 * (len(file_sizes) + 1) + compress * 0x8 * chunk_count
+    # Also add padding so that the data always starts at an offset which is a
+    # multiple of 0x10
+    extra_padding = padding(data_offset)
+    data_offset += extra_padding
 
     # Now write the file index data, and reserve the chunk index data.
-    buffer.write(secrets.token_bytes(0x10))
+    buffer.write(struct.pack("16x"))
     buffer.write(struct.pack("<QQ", data_offset, filepath_data_len))
     for i, fsize in enumerate(file_sizes):
-        buffer.write(secrets.token_bytes(0x10))
+        buffer.write(struct.pack("16x"))
         buffer.write(struct.pack("<QQ", file_offsets[i] + data_offset, fsize))
     # Reserve space for the compressed chunk sizes if the file is compressed.
     chunk_index_offset = buffer.tell()
     if compress:
-        buffer.write(b"\x00" * 8 * chunk_count)
+        buffer.write(b"\x00" * (8 * chunk_count + extra_padding))
 
-    # Write the chunk count into the header.
+    # Write the file count into the header.
+    buffer.seek(0x10, SEEK_SET)
+    buffer.write(struct.pack("<Q", len(file_sizes) + 1))
+    # And the chunk count.
     buffer.seek(0x18, SEEK_SET)
     buffer.write(struct.pack('<Q', chunk_count))
     # And the data offset.
-    buffer.seek(0x28)
+    buffer.seek(0x28, SEEK_SET)
     buffer.write(struct.pack('<Q', data_offset))
 
     # We now have everything in place (finally!) to start reading the input
@@ -480,7 +540,7 @@ def pack(files: list[str], root_directory: str, compress: bool = False):
 
     buffer.seek(0, SEEK_END)
 
-    sub_buffer = FixedBuffer(buffer, compress)
+    sub_buffer = FixedBuffer(buffer, compress, compressor)
 
     # First, write the filename buffer into the temp_buffer.
     req_chunks = determine_bins(filepath_data_len, DECOMPRESSED_CHUNK_SIZE)
@@ -489,8 +549,11 @@ def pack(files: list[str], root_directory: str, compress: bool = False):
     # Add the padding bytes for the filepath data
     sub_buffer.add_bytes(b"\x00" * padding(filepath_data_len))
 
-    for _data in chunked_file_reader(files):
-        sub_buffer.add_bytes(_data)
+    for _data, type_ in chunked_file_reader(fullpaths):
+        if type_ == FILE_ITERATOR_TYPE_DATA:
+            sub_buffer.add_bytes(_data)
+        else:
+            hashes.append(_data)
     # Finally, call write_to_main_buffer to flush the last block to the file.
     sub_buffer.write_to_main_buffer()
 
@@ -499,6 +562,11 @@ def pack(files: list[str], root_directory: str, compress: bool = False):
         # Get the compressed block sizes and write to the chunk info section.
         for chunk_size in sub_buffer.compressed_block_sizes:
             buffer.write(struct.pack("<Q", chunk_size))
+
+    # Write the file hashes to the file info TOC
+    for i, hash_ in enumerate(hashes):
+        buffer.seek(0x30 + 0x20 * i)
+        buffer.write(hash_)
 
     return buffer
 
@@ -554,17 +622,20 @@ if __name__ == '__main__':
     else:
         mode = "pack"
 
+    if args.switch:
+        platform = "SWITCH"
+    else:
+        platform = "MAC"
+    compressor = Compressor(platform)
+
     if mode == "unpack":
-        od = None
-        if args.switch:
-            od = OodleCompressor(op.join(op.dirname(__file__), OSCONST.LIB_NAME))
         t1 = time.time()
         pack_count = 0
         if args.list:
             filename_data: dict[str, list[str]] = {}
         for filename in filenames:
             with open(filename, "rb") as pak:
-                f = HGPakFile(pak, od)
+                f = HGPakFile(pak, compressor)
                 f.read()
                 if args.list:
                     # generate a list of the contained files
@@ -579,12 +650,22 @@ if __name__ == '__main__':
         else:
             print(f"Unpacked {pack_count} .pak's in {time.time() - t1:3f}s")
     else:
-        # For now we'll only support packing local files...
+        # Need to do some processing of the filenames/paths we are provided.
+        # If the paths provided are absolute we will assume that they are from
+        # the batch script. In this case the "root" directory will be the parent
+        # directory of the first file
+        if op.isabs(filenames[0]):
+            root_dir = op.dirname(filenames[0])
+        else:
+            # Otherwise, if the paths are relative, the root path will be the
+            # folder up from this...
+            root_dir = op.abspath(op.dirname(op.dirname(__file__)))
+
         data = pack(
             [op.abspath(fname) for fname in filenames],
-            op.dirname(__file__),
-            args.compress
+            root_dir,
+            args.compress,
+            compressor,
         )
         with open(args.output, "wb") as f_out:
             f_out.write(data.getbuffer())
-    time.sleep(5)

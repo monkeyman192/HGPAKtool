@@ -32,12 +32,11 @@ class OodleCompressor():
                 "Could not load Oodle DLL, requires Windows and 64bit python to run."
             ) from e
 
-    def compress(self, payload: bytes) -> bytes:
-        payload_length = len(payload)
+    def compress(self, payload: bytes, size: int) -> bytes:
         # Overestimate the required buffer by creating one the same size as the
         # input file as we should be able to safely assume the compressed file
         # will not be larger than the original file.
-        output = create_string_buffer(payload_length)
+        output = create_string_buffer(size)
 
         # OodleLZ_Compress arguments:
         # 0: compressor     which OodleLZ variant to use in compression
@@ -53,7 +52,7 @@ class OodleCompressor():
         ret = self.handle.OodleLZ_Compress(
             9,                  # compressor
             payload,            # rawBuf
-            payload_length,     # rawLen
+            size,               # rawLen
             output,             # compBuf
             4,                  # level
             None,               # pOptions

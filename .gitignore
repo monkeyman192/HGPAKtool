@@ -1,5 +1,6 @@
 # pak files (for testing)
 *.pak
+filenames.json
 
 # Ignore the default extract directory.
 EXTRACTED/
