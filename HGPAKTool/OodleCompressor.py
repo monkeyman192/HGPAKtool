@@ -54,7 +54,7 @@ class OodleCompressor():
             payload,            # rawBuf
             size,               # rawLen
             output,             # compBuf
-            4,                  # level
+            6,                  # level
             None,               # pOptions
             None,               # dictionaryBase
             None,               # lrm

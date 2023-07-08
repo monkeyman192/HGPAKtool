@@ -11,6 +11,7 @@ import json
 import os
 import os.path as op
 import pathlib
+import shutil
 import struct
 import sys
 import time
@@ -612,13 +613,24 @@ if __name__ == '__main__':
         default=False,
         help="Pack the provided files into a pak file.",
     )
+    pup_group.add_argument(
+        "-R",
+        "--repack",
+        action="store_true",
+        default=False,
+        help="Repack the files for a given vanilla pak name."
+    )
     parser.add_argument("filenames", nargs="+")
-    parser.add_argument("-O", "--output", default="hgpak.pak")
+    parser.add_argument("-O", "--output", required=False)
     args = parser.parse_args()
     filenames = args.filenames
     if all([x.endswith(".pak") for x in filenames]):
-        # All the files provided are pak files, so decompile them.
-        mode = "unpack"
+        # All the files provided are pak files, so decompress them unless we
+        # have been asked to repack them
+        if args.repack:
+            mode = "repack"
+        else:
+            mode = "unpack"
     else:
         mode = "pack"
 
@@ -629,27 +641,33 @@ if __name__ == '__main__':
     compressor = Compressor(platform)
 
     if mode == "unpack":
+        output = op.abspath(args.output or "EXTRACTED")
+        if not op.exists(output):
+            os.makedirs(output, exist_ok=True)
         t1 = time.time()
         pack_count = 0
-        if args.list:
-            filename_data: dict[str, list[str]] = {}
+        filename_data: dict[str, list[str]] = {}
         for filename in filenames:
             with open(filename, "rb") as pak:
                 f = HGPakFile(pak, compressor)
                 f.read()
-                if args.list:
-                    # generate a list of the contained files
-                    filename_data[op.basename(filename)] = f.filenames
-                else:
-                    f.unpack_all("EXTRACTED")
+                # generate a list of the contained files
+                filename_data[op.basename(filename)] = f.filenames
+                f.unpack_all(output)
             pack_count += 1
 
         if args.list:
             with open("filenames.json", "w") as f:
                 f.write(json.dumps(filename_data, indent=2))
         else:
+            for pakname, filenames in filename_data.items():
+                with open(f".{pakname}.contents", "w") as f:
+                    f.write(
+                        json.dumps({"filenames": filenames, "root_dir": output})
+                    )
             print(f"Unpacked {pack_count} .pak's in {time.time() - t1:3f}s")
-    else:
+    elif mode == "pack":
+        output = args.output or "hgpak.pak"
         # Need to do some processing of the filenames/paths we are provided.
         # If the paths provided are absolute we will assume that they are from
         # the batch script. In this case the "root" directory will be the parent
@@ -667,5 +685,26 @@ if __name__ == '__main__':
             args.compress,
             compressor,
         )
-        with open(args.output, "wb") as f_out:
+        with open(output, "wb") as f_out:
             f_out.write(data.getbuffer())
+    else:
+        # "repack" mode
+        for pakname in filenames:
+            pakname = op.basename(pakname)
+            output = args.output or pakname
+            with open(f".{pakname}.contents", "r") as f:
+                _contents = json.loads(f.read())
+                pak_contents = _contents["filenames"]
+                root_dir = _contents["root_dir"]
+            data = pack(
+                [op.join(root_dir, fname) for fname in pak_contents],
+                root_dir,
+                args.compress,
+                compressor,
+            )
+
+            # Rename the original file.
+            if not op.exists(f"{pakname}.bak"):
+                shutil.move(pakname, f"{pakname}.bak")
+            with open(pakname, "wb") as f_out:
+                f_out.write(data.getbuffer())
