@@ -1,5 +1,5 @@
 __author__ = "monkeyman192"
-__version__ = "0.3"
+__version__ = "0.4"
 
 import argparse
 import array
@@ -488,7 +488,11 @@ def pack(files: list[str], root_directory: str, compress: bool = False,
         else:
             fullpaths.append(_fpath)
             file_sizes.append(os.stat(_fpath).st_size)
-            filepath_data += op.relpath(_fpath, root_directory).encode() + b"\x0D\x0A"
+            relpath = op.relpath(_fpath, root_directory)
+            # On windows the path will have \'s instead of /'s. Fix it.
+            if op.sep == "\\":
+                relpath = pathlib.PureWindowsPath(relpath).as_posix()
+            filepath_data += relpath.encode() + b"\x0D\x0A"
     filepath_data_len = len(filepath_data)
 
     # Hash the filepath data.
@@ -595,7 +599,6 @@ if __name__ == '__main__':
         "-Z",
         "--compress",
         action="store_true",
-        default=True,
         help="Whether or not to compress the provided files."
     )
     pup_group = parser.add_mutually_exclusive_group()  # pup = pack/unpack
