@@ -29,7 +29,8 @@ except ModuleNotFoundError:
     sys.exit(1)
 
 
-FILEINFO = namedtuple("FILEINFO", ["hash1", "hash2", "startOffset", "decompressed_size"])
+FILEINFO = namedtuple("FILEINFO", ["file_hash", "start_offset", "decompressed_size"])
+FILEINFO_FMT = "<16s2Q"
 CHUNKINFO = namedtuple("CHUNKINFO", ["size", "offset"])
 
 # The game decompresses chunks to this size blocks (128kb)
@@ -217,12 +218,9 @@ class FixedBuffer(BytesIO):
         self.seek(0)
 
 
-def chunked_file_reader(fpaths: list[str]) -> Iterator[tuple[bytes, int]]:
-    """ Yield chunks of size up to 0x20000 bytes from a file or the hash if the
-    file has completed.
-    """
+def chunked_file_reader(fpaths: list[str]) -> Iterator[bytes]:
+    """ Yield chunks of size up to 0x20000 bytes from a file. """
     for fpath in fpaths:
-        hash_ = hashlib.md5()
         with open(fpath, "rb") as f:
             while True:
                 data = f.read(DECOMPRESSED_CHUNK_SIZE)
@@ -232,9 +230,7 @@ def chunked_file_reader(fpaths: list[str]) -> Iterator[tuple[bytes, int]]:
                 if data_len != DECOMPRESSED_CHUNK_SIZE:
                     # Add on the padding bytes
                     data += b"\x00" * padding(data_len)
-                hash_.update(data)
-                yield (data, FILE_ITERATOR_TYPE_DATA)
-        yield (hash_.digest(), FILE_ITERATOR_TYPE_HASH)
+                yield data
 
 
 class HGPakHeader():
@@ -273,15 +269,15 @@ class HGPakFileIndex():
 
     def read(self, fileCount: int, fobj):
         for _ in range(fileCount):
-            finf = FILEINFO(*struct.unpack("<4Q", fobj.read(0x20)))
+            finf = FILEINFO(*struct.unpack(FILEINFO_FMT, fobj.read(0x20)))
             self.fileInfo.append(finf)
-            if finf.startOffset > self.max_offset:
-                self.max_offset = finf.startOffset
+            if finf.start_offset > self.max_offset:
+                self.max_offset = finf.start_offset
                 self.max_offset_size = finf.decompressed_size
 
     def write(self, fobj):
         for finf in self.fileInfo:
-            fobj.write(struct.pack("<4Q", *finf._asdict().values()))
+            fobj.write(struct.pack(FILEINFO_FMT, *finf._asdict().values()))
 
 
 class HGPakChunkIndex():
@@ -365,7 +361,7 @@ class HGPakFile():
             if fname:
                 finf = self.fileIndex.fileInfo[i + 1]
                 self.files[fname] = File(
-                    finf.startOffset - self.header.dataOffset,
+                    finf.start_offset - self.header.dataOffset,
                     finf.decompressed_size,
                     fname
                 )
@@ -428,7 +424,7 @@ class HGPakFile():
 
     def _extract_file_uncompressed(self, index: int, out_dir: str):
         finf = self.fileIndex.fileInfo[index + 1]
-        self.fobj.seek(finf.startOffset)
+        self.fobj.seek(finf.start_offset)
         # Now write the file out.
         _export_path, fname = op.split(self.filenames[index])
         dir_ = op.join(out_dir, _export_path)
@@ -446,8 +442,8 @@ class HGPakFile():
         pass
 
 
-def pack(files: list[str], root_directory: str, compress: bool = False,
-         compressor: Optional[Compressor] = None):
+def pack(files: list[str], root_directory: str, filename_hash: bytes,
+         compress: bool = False, compressor: Optional[Compressor] = None):
     """ Add a number of files to the archive"""
     # First, let's create a buffer which will contain the data.
     buffer = BytesIO()
@@ -468,7 +464,11 @@ def pack(files: list[str], root_directory: str, compress: bool = False,
     file_sizes = array.array("Q")
     file_offsets = array.array("Q")
     filepath_data = b""
-    fullpaths = []
+    # keep track of the full paths so that we may load them from disk to read.
+    fullpaths: list[str] = []
+    # The list of relative paths. These are what will be written into the paths
+    # chunk and what will be hashed to write the hashes.
+    rel_paths: list[bytes] = []
     for _fpath in files:
         # If the path is a directory, we'll need to loop over it to get all the
         # files within the directory.
@@ -484,7 +484,9 @@ def pack(files: list[str], root_directory: str, compress: bool = False,
                     # On windows the path will have \'s instead of /'s. Fix it.
                     if op.sep == "\\":
                         relpath = pathlib.PureWindowsPath(relpath).as_posix()
-                    filepath_data += relpath.encode() + b"\x0D\x0A"
+                    relpath_bytes = relpath.encode()
+                    filepath_data += relpath_bytes + b"\x0D\x0A"
+                    rel_paths.append(relpath_bytes)
         else:
             fullpaths.append(_fpath)
             file_sizes.append(os.stat(_fpath).st_size)
@@ -492,11 +494,14 @@ def pack(files: list[str], root_directory: str, compress: bool = False,
             # On windows the path will have \'s instead of /'s. Fix it.
             if op.sep == "\\":
                 relpath = pathlib.PureWindowsPath(relpath).as_posix()
-            filepath_data += relpath.encode() + b"\x0D\x0A"
+            relpath_bytes = relpath.encode()
+            filepath_data += relpath_bytes + b"\x0D\x0A"
+            rel_paths.append(relpath_bytes)
     filepath_data_len = len(filepath_data)
 
-    # Hash the filepath data.
-    hashes.append(hashlib.md5(filepath_data).digest())
+    # Hash the file names
+    for fname in rel_paths:
+        hashes.append(hashlib.md5(fname).digest())
 
     # Aggregate the above data to determine the offsets and total size of the
     # uncompressed data.
@@ -520,10 +525,10 @@ def pack(files: list[str], root_directory: str, compress: bool = False,
     data_offset += extra_padding
 
     # Now write the file index data, and reserve the chunk index data.
-    buffer.write(struct.pack("16x"))
+    buffer.write(struct.pack("16s", filename_hash))
     buffer.write(struct.pack("<QQ", data_offset, filepath_data_len))
     for i, fsize in enumerate(file_sizes):
-        buffer.write(struct.pack("16x"))
+        buffer.write(struct.pack("16s", hashes[i]))
         buffer.write(struct.pack("<QQ", file_offsets[i] + data_offset, fsize))
     # Reserve space for the compressed chunk sizes if the file is compressed.
     chunk_index_offset = buffer.tell()
@@ -554,11 +559,8 @@ def pack(files: list[str], root_directory: str, compress: bool = False,
     # Add the padding bytes for the filepath data
     sub_buffer.add_bytes(b"\x00" * padding(filepath_data_len))
 
-    for _data, type_ in chunked_file_reader(fullpaths):
-        if type_ == FILE_ITERATOR_TYPE_DATA:
-            sub_buffer.add_bytes(_data)
-        else:
-            hashes.append(_data)
+    for _data in chunked_file_reader(fullpaths):
+        sub_buffer.add_bytes(_data)
     # Finally, call write_to_main_buffer to flush the last block to the file.
     sub_buffer.write_to_main_buffer()
 
@@ -567,11 +569,6 @@ def pack(files: list[str], root_directory: str, compress: bool = False,
         # Get the compressed block sizes and write to the chunk info section.
         for chunk_size in sub_buffer.compressed_block_sizes:
             buffer.write(struct.pack("<Q", chunk_size))
-
-    # Write the file hashes to the file info TOC
-    for i, hash_ in enumerate(hashes):
-        buffer.seek(0x30 + 0x20 * i)
-        buffer.write(hash_)
 
     return buffer
 
@@ -656,7 +653,8 @@ if __name__ == '__main__':
                 f.read()
                 # generate a list of the contained files
                 filename_data[op.basename(filename)] = f.filenames
-                f.unpack_all(output)
+                if not args.list:
+                    f.unpack_all(output)
             pack_count += 1
 
         if args.list:
@@ -671,6 +669,7 @@ if __name__ == '__main__':
             print(f"Unpacked {pack_count} .pak's in {time.time() - t1:3f}s")
     elif mode == "pack":
         output = args.output or "hgpak.pak"
+        pak_hash = hashlib.md5(output.encode()).digest()
         # Need to do some processing of the filenames/paths we are provided.
         # If the paths provided are absolute we will assume that they are from
         # the batch script. In this case the "root" directory will be the parent
@@ -685,15 +684,22 @@ if __name__ == '__main__':
         data = pack(
             [op.abspath(fname) for fname in filenames],
             root_dir,
+            pak_hash,
             args.compress,
             compressor,
         )
         with open(output, "wb") as f_out:
             f_out.write(data.getbuffer())
     else:
+        with open(op.join(op.dirname(__file__), "..", "filename_hashes.json"), "r") as f:
+            filename_hashes: dict[str, str] = json.load(f)
         # "repack" mode
         for pakname in filenames:
             pakname = op.basename(pakname)
+            if pakname in filename_hashes:
+                pak_hash = bytes.fromhex(filename_hashes[pakname])
+            else:
+                pak_hash = hashlib.md5(pakname.encode()).digest()
             output = args.output or pakname
             with open(f".{pakname}.contents", "r") as f:
                 _contents = json.loads(f.read())
@@ -702,6 +708,7 @@ if __name__ == '__main__':
             data = pack(
                 [op.join(root_dir, fname) for fname in pak_contents],
                 root_dir,
+                pak_hash,
                 args.compress,
                 compressor,
             )
