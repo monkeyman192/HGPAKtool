@@ -625,7 +625,7 @@ if __name__ == '__main__':
     parser.add_argument("-O", "--output", required=False)
     args = parser.parse_args()
     filenames = args.filenames
-    if all([x.endswith(".pak") for x in filenames]):
+    if all([x.endswith(".pak") for x in filenames]) or (len(filenames) == 1 and op.isdir(filenames[0])):
         # All the files provided are pak files, so decompress them unless we
         # have been asked to repack them
         if args.repack:
@@ -649,13 +649,23 @@ if __name__ == '__main__':
         pack_count = 0
         filename_data: dict[str, list[str]] = {}
         for filename in filenames:
-            with open(filename, "rb") as pak:
-                f = HGPakFile(pak, compressor)
-                f.read()
-                # generate a list of the contained files
-                filename_data[op.basename(filename)] = f.filenames
-                if not args.list:
-                    f.unpack_all(output)
+            if op.isdir(filename):
+                for fname in os.listdir(filename):
+                    with open(op.join(filename, fname), "rb") as pak:
+                        f = HGPakFile(pak, compressor)
+                        f.read()
+                        # generate a list of the contained files
+                        filename_data[fname] = f.filenames
+                        if not args.list:
+                            f.unpack_all(output)
+            else:
+                with open(filename, "rb") as pak:
+                    f = HGPakFile(pak, compressor)
+                    f.read()
+                    # generate a list of the contained files
+                    filename_data[op.basename(filename)] = f.filenames
+                    if not args.list:
+                        f.unpack_all(output)
             pack_count += 1
 
         if args.list:
