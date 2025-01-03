@@ -23,9 +23,9 @@ from OodleCompressor import OodleCompressor, OodleDecompressionError
 from utils import OSCONST
 
 try:
-    import lz4.block
+    import zstandard as zstd
 except ModuleNotFoundError:
-    print("You need to install lz4 for this code to work. Please run `pip install lz4`")
+    print("You need to install zstandard for this code to work. Please run `pip install zstandard`")
     sys.exit(1)
 
 
@@ -75,7 +75,8 @@ class Compressor():
     def __init__(self, mode: str = "MAC"):
         self.mode = mode
         if self.mode == "MAC":
-            self.compressor = lz4.block
+            # TEMP fix for decompression. Won't work for compression.
+            self.compressor = zstd.ZstdDecompressor()
         else:
             self.compressor = OodleCompressor(
                 op.join(op.dirname(__file__), "lib", OSCONST.LIB_NAME)
@@ -98,9 +99,9 @@ class Compressor():
             try:
                 return self.compressor.decompress(
                         data,
-                        uncompressed_size=DECOMPRESSED_CHUNK_SIZE
+                        max_output_size=DECOMPRESSED_CHUNK_SIZE
                     )
-            except lz4.block.LZ4BlockError:
+            except zstd.ZstdError:
                 if len(data) == DECOMPRESSED_CHUNK_SIZE:
                     # In this case the block was just not compressed. Return it.
                     return data

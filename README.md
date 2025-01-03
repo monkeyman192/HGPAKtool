@@ -14,9 +14,9 @@ I have tested it and it seems fine, but you should check yourself.
 
 ## Usage:
 
-First, install the [lz4](https://pypi.org/project/lz4/) python package:
+First, install the [zstandard](https://pypi.org/project/zstandard/) python package:
 ```
-python -m pip install lz4
+python -m pip install zstandard
 ```
 (installation may vary system to system depending on your python installation)
 
