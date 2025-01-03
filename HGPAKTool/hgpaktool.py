@@ -34,7 +34,7 @@ FILEINFO_FMT = "<16s2Q"
 CHUNKINFO = namedtuple("CHUNKINFO", ["size", "offset"])
 
 # The game decompresses chunks to this size blocks (128kb)
-DECOMPRESSED_CHUNK_SIZE = 0x20000
+DECOMPRESSED_CHUNK_SIZE = 0x10000
 CLEAN_BYTES = b"\x00" * DECOMPRESSED_CHUNK_SIZE
 
 
@@ -306,6 +306,7 @@ class HGPakFile():
 
     def read(self):
         self.header.read(self.fobj)
+        # print(self.header)
         self.fileIndex.read(self.header.fileCount, self.fobj)
         if self.header.is_compressed is False:
             # We only need to read the filename data and then return.
@@ -587,6 +588,13 @@ if __name__ == '__main__':
         help="Generate a list of files contained within the pak file.",
     )
     parser.add_argument(
+        "-N",
+        "--nocontents",
+        action="store_true",
+        default=False,
+        help="Store the contents of a .pak in a file for recompression",
+    )
+    parser.add_argument(
         "-S",
         "--switch",
         action="store_true",
@@ -622,7 +630,16 @@ if __name__ == '__main__':
         help="Repack the files for a given vanilla pak name."
     )
     parser.add_argument("filenames", nargs="+")
-    parser.add_argument("-O", "--output", required=False)
+    parser.add_argument(
+        "-O",
+        "--output",
+        required=False,
+        help=(
+            "The directory to place extracted files in. If not provided, falls back to a folder called "
+            "'EXPORTED' in the current directory."
+        )
+
+    )
     args = parser.parse_args()
     filenames = args.filenames
     if all([x.endswith(".pak") for x in filenames]) or (len(filenames) == 1 and op.isdir(filenames[0])):
@@ -651,6 +668,7 @@ if __name__ == '__main__':
         for filename in filenames:
             if op.isdir(filename):
                 for fname in os.listdir(filename):
+                    print(f"Unpacking {fname}")
                     with open(op.join(filename, fname), "rb") as pak:
                         f = HGPakFile(pak, compressor)
                         f.read()
@@ -671,7 +689,7 @@ if __name__ == '__main__':
         if args.list:
             with open("filenames.json", "w") as f:
                 f.write(json.dumps(filename_data, indent=2))
-        else:
+        elif not args.nocontents:
             for pakname, filenames in filename_data.items():
                 with open(f".{pakname}.contents", "w") as f:
                     f.write(
