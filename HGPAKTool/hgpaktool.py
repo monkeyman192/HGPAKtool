@@ -4,6 +4,7 @@ __version__ = "0.4"
 import argparse
 import array
 from collections import namedtuple
+from contextvars import ContextVar
 from functools import lru_cache
 import hashlib
 from io import BytesIO, SEEK_SET, SEEK_CUR, SEEK_END
@@ -37,6 +38,9 @@ CHUNKINFO = namedtuple("CHUNKINFO", ["size", "offset"])
 DECOMPRESSED_CHUNK_SIZE = 0x10000
 CLEAN_BYTES = b"\x00" * DECOMPRESSED_CHUNK_SIZE
 
+
+ctx_verbose = ContextVar("verbose")
+ctx_verbose.set(False)
 
 FILE_ITERATOR_TYPE_DATA = 0
 FILE_ITERATOR_TYPE_HASH = 1
@@ -326,10 +330,11 @@ class HGPakFile():
             DECOMPRESSED_CHUNK_SIZE
         )
         if found_chunk_count != self.header.chunk_count:
-            print(
-                f"chunk mismatch. Found: {found_chunk_count}, "
-                f"expected: {self.header.chunk_count}"
-            )
+            if ctx_verbose.get() is True:
+                print(
+                    f"chunk mismatch. Found: {found_chunk_count}, "
+                    f"expected: {self.header.chunk_count}"
+                )
         if self.header.is_compressed:
             self.chunkIndex.read(self.header.chunk_count, self.fobj)
         # Finally, we should now be at the start of the compressed data.
@@ -595,6 +600,13 @@ if __name__ == '__main__':
         help="Store the contents of a .pak in a file for recompression",
     )
     parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        default=False,
+        help="Log extra info when (un)packing archives",
+    )
+    parser.add_argument(
         "-S",
         "--switch",
         action="store_true",
@@ -651,6 +663,9 @@ if __name__ == '__main__':
             mode = "unpack"
     else:
         mode = "pack"
+
+    if args.verbose is True:
+        ctx_verbose.set(True)
 
     if args.switch:
         platform = "SWITCH"
