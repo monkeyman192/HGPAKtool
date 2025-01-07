@@ -135,7 +135,10 @@ class File():
     def in_chunks(self) -> tuple[int]:
         """ Determine which chunks the file is contained in. """
         if self._in_chunks is None:
-            start_chunk = determine_bins(self.offset, DECOMPRESSED_CHUNK_SIZE) - 1
+            if self.offset % DECOMPRESSED_CHUNK_SIZE == 0:
+                start_chunk = determine_bins(self.offset, DECOMPRESSED_CHUNK_SIZE)
+            else:
+                start_chunk = determine_bins(self.offset, DECOMPRESSED_CHUNK_SIZE) - 1
             end_chunk = determine_bins(self.offset + self.size, DECOMPRESSED_CHUNK_SIZE) - 1
             self._in_chunks = (start_chunk, end_chunk)
         return self._in_chunks
@@ -269,16 +272,16 @@ class HGPakHeader():
 class HGPakFileIndex():
     def __init__(self):
         self.fileInfo: list[FILEINFO] = []
-        self.max_offset = 0
-        self.max_offset_size = 0
+        self.final_offset = 0
+        self.final_offset_size = 0
 
     def read(self, fileCount: int, fobj):
         for _ in range(fileCount):
             finf = FILEINFO(*struct.unpack(FILEINFO_FMT, fobj.read(0x20)))
             self.fileInfo.append(finf)
-            if finf.start_offset > self.max_offset:
-                self.max_offset = finf.start_offset
-                self.max_offset_size = finf.decompressed_size
+            if finf.start_offset > self.final_offset:
+                self.final_offset = finf.start_offset
+                self.final_offset_size = finf.decompressed_size
 
     def write(self, fobj):
         for finf in self.fileInfo:
@@ -306,11 +309,10 @@ class HGPakFile():
 
     @property
     def total_decompressed_size(self):
-        return self.fileIndex.max_offset + self.fileIndex.max_offset_size
+        return self.fileIndex.final_offset + self.fileIndex.final_offset_size
 
     def read(self):
         self.header.read(self.fobj)
-        # print(self.header)
         self.fileIndex.read(self.header.fileCount, self.fobj)
         if self.header.is_compressed is False:
             # We only need to read the filename data and then return.
