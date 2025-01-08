@@ -5,6 +5,7 @@ import argparse
 import array
 from collections import namedtuple
 from contextvars import ContextVar
+import fnmatch
 from functools import lru_cache
 import hashlib
 from io import BytesIO, SEEK_SET, SEEK_CUR, SEEK_END
@@ -381,10 +382,16 @@ class HGPakFile():
         chunk_size = self.chunkIndex.chunk_sizes[chunkIdx]
         return self.compressor.decompress(self.fobj.read(chunk_size))
 
-    def unpack_all(self, out_dir: str = "EXTRACTED"):
+    def unpack_all(self, out_dir: str = "EXTRACTED", filters: Optional[list[str]] = None):
         i = 0
         if self.header.is_compressed:
-            for fpath in self.files:
+            if filters is not None:
+                files = set()
+                for filter_ in filters:
+                    files.update(fnmatch.filter(self.files, filter_))
+            else:
+                files = self.files
+            for fpath in files:
                 self._extract_file_compressed(fpath, out_dir)
                 i += 1
         else:
@@ -652,8 +659,14 @@ if __name__ == '__main__':
             "The directory to place extracted files in. If not provided, falls back to a folder called "
             "'EXPORTED' in the current directory."
         )
-
     )
+    parser.add_argument(
+        "-f",
+        "--filter",
+        action="append",
+        help="A glob pattern which can be used to filter out the files which are to be extracted."
+    )
+
     args = parser.parse_args()
     filenames = args.filenames
     if all([x.endswith(".pak") for x in filenames]) or (len(filenames) == 1 and op.isdir(filenames[0])):
@@ -692,7 +705,7 @@ if __name__ == '__main__':
                         # generate a list of the contained files
                         filename_data[fname] = f.filenames
                         if not args.list:
-                            f.unpack_all(output)
+                            f.unpack_all(output, args.filter)
             else:
                 with open(filename, "rb") as pak:
                     f = HGPakFile(pak, compressor)
@@ -700,7 +713,7 @@ if __name__ == '__main__':
                     # generate a list of the contained files
                     filename_data[op.basename(filename)] = f.filenames
                     if not args.list:
-                        f.unpack_all(output)
+                        f.unpack_all(output, args.filter)
             pack_count += 1
 
         if args.list:
