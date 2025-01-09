@@ -326,6 +326,14 @@ class HGPakFile():
                     :self.fileIndex.fileInfo[0].decompressed_size
                 ].rstrip(b"\x0D\x0A").split(b"\x0D\x0A")
             ]
+            for i, fname in enumerate(self.filenames):
+                if fname:
+                    finf = self.fileIndex.fileInfo[i + 1]
+                    self.files[fname] = File(
+                        finf.start_offset,
+                        finf.decompressed_size,
+                        fname
+                    )
             return
         # Determine the expected number of chunks and see if this matches
         found_chunk_count = determine_bins(
@@ -383,21 +391,23 @@ class HGPakFile():
         return self.compressor.decompress(self.fobj.read(chunk_size))
 
     def unpack_all(self, out_dir: str = "EXTRACTED", filters: Optional[list[str]] = None):
-        i = 0
-        if self.header.is_compressed:
-            if filters is not None:
-                files = set()
-                for filter_ in filters:
-                    files.update(fnmatch.filter(self.files, filter_))
-            else:
-                files = self.files
-            for fpath in files:
-                self._extract_file_compressed(fpath, out_dir)
-                i += 1
+        if filters is not None:
+            files = set()
+            for filter_ in filters:
+                files.update(fnmatch.filter(self.files, filter_))
         else:
-            for i in range(self.header.fileCount - 1):
-                self._extract_file_uncompressed(i, out_dir)
-                i += 1
+            files = self.files
+        if len(files) == 0:
+            print("No files to extract")
+            return
+        if self.header.is_compressed:
+            func = self._extract_file_compressed
+        else:
+            func = self._extract_file_uncompressed
+        i = 0
+        for fpath in files:
+            func(fpath, out_dir)
+            i += 1
         print(f"Wrote {i} files to {out_dir}")
 
     def _extract_file_compressed(self, fpath: str, out_dir: str):
@@ -438,16 +448,18 @@ class HGPakFile():
         with open(op.join(dir_, fname), "wb") as f:
             f.write(_data.getbuffer())
 
-    def _extract_file_uncompressed(self, index: int, out_dir: str):
-        finf = self.fileIndex.fileInfo[index + 1]
-        self.fobj.seek(finf.start_offset)
+    def _extract_file_uncompressed(self, fpath: str, out_dir: str):
+        finf = self.files.get(fpath)
+        if not finf:
+            raise FileNotFoundError("The specified file path doesn't exist in this pak")
+        self.fobj.seek(finf.offset)
         # Now write the file out.
-        _export_path, fname = op.split(self.filenames[index])
+        _export_path, fname = op.split(fpath)
         dir_ = op.join(out_dir, _export_path)
         if dir_:
             os.makedirs(dir_, exist_ok=True)
         with open(op.join(dir_, fname), "wb") as f:
-            f.write(self.fobj.read(finf.decompressed_size))
+            f.write(self.fobj.read(finf.size))
 
     def compress(self):
         """ Compress an archive. """
@@ -690,7 +702,7 @@ if __name__ == '__main__':
 
     if mode == "unpack":
         output = op.abspath(args.output or "EXTRACTED")
-        if not op.exists(output):
+        if not op.exists(output) and not args.list:
             os.makedirs(output, exist_ok=True)
         t1 = time.time()
         pack_count = 0
@@ -698,27 +710,43 @@ if __name__ == '__main__':
         for filename in filenames:
             if op.isdir(filename):
                 for fname in os.listdir(filename):
+                    if not fname.endswith(".pak"):
+                        continue
                     print(f"Unpacking {fname}")
                     with open(op.join(filename, fname), "rb") as pak:
                         f = HGPakFile(pak, compressor)
                         f.read()
                         # generate a list of the contained files
-                        filename_data[fname] = f.filenames
+                        _fn_data = []
+                        for i, fname_ in enumerate(f.filenames):
+                            _fn_data.append({
+                                "name": fname_,
+                                "hash": f.fileIndex.fileInfo[i].file_hash.hex()
+                            })
+                        filename_data[fname] = _fn_data
                         if not args.list:
                             f.unpack_all(output, args.filter)
+                    pack_count += 1
             else:
                 with open(filename, "rb") as pak:
                     f = HGPakFile(pak, compressor)
                     f.read()
                     # generate a list of the contained files
-                    filename_data[op.basename(filename)] = f.filenames
+                    _fn_data = []
+                    for i, fname_ in enumerate(f.filenames):
+                        _fn_data.append({
+                            "name": fname_,
+                            "hash": f.fileIndex.fileInfo[i].file_hash.hex()
+                        })
+                    filename_data[op.basename(filename)] = _fn_data
                     if not args.list:
                         f.unpack_all(output, args.filter)
-            pack_count += 1
+                pack_count += 1
 
         if args.list:
             with open("filenames.json", "w") as f:
                 f.write(json.dumps(filename_data, indent=2))
+            print(f"Listed contents of {pack_count} .pak's in {time.time() - t1:3f}s")
         elif not args.nocontents:
             for pakname, filenames in filename_data.items():
                 with open(f".{pakname}.contents", "w") as f:
