@@ -43,9 +43,6 @@ CLEAN_BYTES = b"\x00" * DECOMPRESSED_CHUNK_SIZE
 ctx_verbose = ContextVar("verbose")
 ctx_verbose.set(False)
 
-FILE_ITERATOR_TYPE_DATA = 0
-FILE_ITERATOR_TYPE_HASH = 1
-
 
 class InvalidFileException(Exception):
     pass
@@ -390,7 +387,8 @@ class HGPakFile():
         chunk_size = self.chunkIndex.chunk_sizes[chunkIdx]
         return self.compressor.decompress(self.fobj.read(chunk_size))
 
-    def unpack_all(self, out_dir: str = "EXTRACTED", filters: Optional[list[str]] = None):
+    def unpack_all(self, out_dir: str = "EXTRACTED", filters: Optional[list[str]] = None) -> int:
+        i = 0
         if filters is not None:
             files = set()
             for filter_ in filters:
@@ -398,17 +396,15 @@ class HGPakFile():
         else:
             files = self.files
         if len(files) == 0:
-            print("No files to extract")
-            return
+            return 0
         if self.header.is_compressed:
             func = self._extract_file_compressed
         else:
             func = self._extract_file_uncompressed
-        i = 0
         for fpath in files:
             func(fpath, out_dir)
             i += 1
-        print(f"Wrote {i} files to {out_dir}")
+        return i
 
     def _extract_file_compressed(self, fpath: str, out_dir: str):
         # First, get the file info.
@@ -621,6 +617,13 @@ if __name__ == '__main__':
         help="Store the contents of a .pak in a file for recompression",
     )
     parser.add_argument(
+        "-C",
+        "--contents",
+        action="store_true",
+        default=False,
+        help="Store the contents of a .pak in a file for recompression",
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -706,6 +709,7 @@ if __name__ == '__main__':
             os.makedirs(output, exist_ok=True)
         t1 = time.time()
         pack_count = 0
+        file_count = 0
         filename_data: dict[str, list[str]] = {}
         for filename in filenames:
             if op.isdir(filename):
@@ -725,7 +729,7 @@ if __name__ == '__main__':
                             })
                         filename_data[fname] = _fn_data
                         if not args.list:
-                            f.unpack_all(output, args.filter)
+                            file_count += f.unpack_all(output, args.filter)
                     pack_count += 1
             else:
                 with open(filename, "rb") as pak:
@@ -740,20 +744,20 @@ if __name__ == '__main__':
                         })
                     filename_data[op.basename(filename)] = _fn_data
                     if not args.list:
-                        f.unpack_all(output, args.filter)
+                        file_count += f.unpack_all(output, args.filter)
                 pack_count += 1
 
         if args.list:
             with open("filenames.json", "w") as f:
                 f.write(json.dumps(filename_data, indent=2))
             print(f"Listed contents of {pack_count} .pak's in {time.time() - t1:3f}s")
-        elif not args.nocontents:
+        elif args.contents:
             for pakname, filenames in filename_data.items():
                 with open(f".{pakname}.contents", "w") as f:
                     f.write(
                         json.dumps({"filenames": filenames, "root_dir": output})
                     )
-            print(f"Unpacked {pack_count} .pak's in {time.time() - t1:3f}s")
+        print(f"Unpacked {file_count} files from {pack_count} .pak's in {time.time() - t1:3f}s")
     elif mode == "pack":
         output = args.output or "hgpak.pak"
         pak_hash = hashlib.md5(output.encode()).digest()
