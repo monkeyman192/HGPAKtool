@@ -29,8 +29,24 @@ To utilise this, first open a console and enter `python --version`. This should 
 If it doesn't show a version this high, or has an error that `python` is invalid, you may need to install python, or find the command which calls python on your system. Other options are `python3`, or `python3.X` where `X` is the installed version you have.
 If you have one of the `python3` commands working, but not `python`, then you will need to change the value in `HGPAKTool.bat` to be the one which works.
 
-Dragging one or more .pak files onto the .bat should unpack them in the current directory under a folder called `EXTRACTED`. Note that this name currently cannot be changed.
+Dragging one or more .pak files onto the .bat should unpack them in the current directory under a folder called `EXTRACTED`, or whatever folder is provided by the `-O` flag.
 
-Dragging multiple files which are not .pak files onto the bat will pack them up and compress them for MAC.
+To unpack your entire PCBANKS folder simply drag the entire folder onto the .bat file.
+
+If you want more control, it is recommended that you run the script directly like so:
+
+`python HGPAKTool/hgpaktool.py -U <path to PCBANKS folder>`
+
+If you do this, you can provide a number of other options such as the `-f` flag which will export only the files which match the pattern provided.
+So for example to export all files which contain the phrase "debris", you would do:
+
+`python HGPAKTool/hgpaktool.py -U -f="*debirs*" <path to PCBANKS folder>`
+
+Multiple `-f` flags can be provided to filter multiple sets of files out. Note that these combine additively.
+The flag can also be used to pull out a single specific file if one provided the complete path to the file (if it is known).
+
+For a complete list of the possible options, run `python HGPAKTool/hgpaktool.py --help`
+
+Dragging multiple files which are not .pak files onto the bat will pack them up and compress them.
 NOTE: compressed switch packing currently not supported.
 There is currently also an issue with repacking archives when compressed.

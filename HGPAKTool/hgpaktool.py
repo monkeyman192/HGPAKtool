@@ -614,7 +614,17 @@ if __name__ == '__main__':
         "--nocontents",
         action="store_true",
         default=False,
-        help="Store the contents of a .pak in a file for recompression",
+        help="[DEPRECATED] Store the contents of a .pak in a file for recompression",
+    )
+    parser.add_argument(
+        "-p",
+        "--plain",
+        action="store_true",
+        default=False,
+        help=(
+            "Whether to output any generation informational files in a "
+            "simplified format"
+        )
     )
     parser.add_argument(
         "-C",
@@ -721,13 +731,7 @@ if __name__ == '__main__':
                         f = HGPakFile(pak, compressor)
                         f.read()
                         # generate a list of the contained files
-                        _fn_data = []
-                        for i, fname_ in enumerate(f.filenames):
-                            _fn_data.append({
-                                "name": fname_,
-                                "hash": f.fileIndex.fileInfo[i].file_hash.hex()
-                            })
-                        filename_data[fname] = _fn_data
+                        filename_data[fname] = f.filenames
                         if not args.list:
                             file_count += f.unpack_all(output, args.filter)
                     pack_count += 1
@@ -736,20 +740,21 @@ if __name__ == '__main__':
                     f = HGPakFile(pak, compressor)
                     f.read()
                     # generate a list of the contained files
-                    _fn_data = []
-                    for i, fname_ in enumerate(f.filenames):
-                        _fn_data.append({
-                            "name": fname_,
-                            "hash": f.fileIndex.fileInfo[i].file_hash.hex()
-                        })
-                    filename_data[op.basename(filename)] = _fn_data
+                    filename_data[fname] = f.filenames
                     if not args.list:
                         file_count += f.unpack_all(output, args.filter)
                 pack_count += 1
 
         if args.list:
-            with open("filenames.json", "w") as f:
-                f.write(json.dumps(filename_data, indent=2))
+            if args.plain:
+                with open("filenames.txt", "w") as f:
+                    for pakname, filenames in filename_data.items():
+                        f.write(f"Listing {pakname}\n")
+                        for fname in filenames:
+                            f.write(fname + "\n")
+            else:
+                with open("filenames.json", "w") as f:
+                    f.write(json.dumps(filename_data, indent=2))
             print(f"Listed contents of {pack_count} .pak's in {time.time() - t1:3f}s")
         elif args.contents:
             for pakname, filenames in filename_data.items():
@@ -757,7 +762,8 @@ if __name__ == '__main__':
                     f.write(
                         json.dumps({"filenames": filenames, "root_dir": output})
                     )
-        print(f"Unpacked {file_count} files from {pack_count} .pak's in {time.time() - t1:3f}s")
+        else:
+            print(f"Unpacked {file_count} files from {pack_count} .pak's in {time.time() - t1:3f}s")
     elif mode == "pack":
         output = args.output or "hgpak.pak"
         pak_hash = hashlib.md5(output.encode()).digest()
