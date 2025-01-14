@@ -1,5 +1,5 @@
 __author__ = "monkeyman192"
-__version__ = "0.4"
+__version__ = "1.0"
 
 import argparse
 import array
