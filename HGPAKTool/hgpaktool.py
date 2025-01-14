@@ -250,7 +250,7 @@ class HGPakHeader():
     def read(self, fobj):
         fobj.seek(0, SEEK_SET)
         if struct.unpack('5s', fobj.read(5))[0] != b"HGPAK":
-            raise InvalidFileException
+            raise InvalidFileException(f"{fobj.name} does not appear to be a valid HGPAK file.")
         fobj.seek(8, SEEK_SET)
         self.version, self.fileCount, self.chunk_count, self.is_compressed, self.dataOffset = (
             struct.unpack('<QQQ?7xQ', fobj.read(0x28))
@@ -387,12 +387,19 @@ class HGPakFile():
         chunk_size = self.chunkIndex.chunk_sizes[chunkIdx]
         return self.compressor.decompress(self.fobj.read(chunk_size))
 
-    def unpack_all(self, out_dir: str = "EXTRACTED", filters: Optional[list[str]] = None) -> int:
+    def unpack(
+        self,
+        out_dir: str = "EXTRACTED",
+        filters: Optional[list[str]] = None,
+        file_list: Optional[list[str]] = None,
+    ) -> int:
         i = 0
         if filters is not None:
             files = set()
             for filter_ in filters:
                 files.update(fnmatch.filter(self.files, filter_))
+        elif file_list is not None:
+            files = set(self.files) & set(file_list)
         else:
             files = self.files
         if len(files) == 0:
@@ -597,6 +604,14 @@ def pack(files: list[str], root_directory: str, filename_hash: bytes,
     return buffer
 
 
+def should_unpack(filenames: list[str]) -> bool:
+    return (
+        all([x.lower().endswith(".pak") for x in filenames])
+        or (len(filenames) == 1 and op.isdir(filenames[0]))
+        or (len(filenames) == 1 and filenames[0].lower().endswith(".json"))
+    )
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         prog="HGPAKtool",
@@ -675,7 +690,16 @@ if __name__ == '__main__':
         default=False,
         help="Repack the files for a given vanilla pak name."
     )
-    parser.add_argument("filenames", nargs="+")
+    parser.add_argument(
+        "filenames",
+        nargs="+",
+        help=(
+            "The file(s) to pack or unpack. If this is a list of pak files or a directory, then it will be "
+            "assumed that the files need to be unpacked.\nIf the filename is a single json file in the same "
+            "format as produced by the -L flag, then it will also be unpacked as per the listed pak files "
+            "and listed contents."
+        )
+    )
     parser.add_argument(
         "-O",
         "--output",
@@ -694,7 +718,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     filenames = args.filenames
-    if all([x.endswith(".pak") for x in filenames]) or (len(filenames) == 1 and op.isdir(filenames[0])):
+    if should_unpack(filenames):
         # All the files provided are pak files, so decompress them unless we
         # have been asked to repack them
         if args.repack:
@@ -721,29 +745,46 @@ if __name__ == '__main__':
         pack_count = 0
         file_count = 0
         filename_data: dict[str, list[str]] = {}
-        for filename in filenames:
-            if op.isdir(filename):
-                for fname in os.listdir(filename):
-                    if not fname.endswith(".pak"):
-                        continue
-                    print(f"Unpacking {fname}")
-                    with open(op.join(filename, fname), "rb") as pak:
+        if (len(filenames) == 1 and filenames[0].lower().endswith(".json")):
+            json_file = filenames[0]
+            # In this case, we got a json file which contains a list of paks to unpack from.
+            with open(json_file, "r") as f:
+                json_data = json.load(f)
+            for pak_path, req_contents in json_data.items():
+                if not pak_path.lower().endswith(".pak"):
+                    print(f"{pak_path} is not a valid path to extract.")
+                    continue
+                with open(pak_path, "rb") as pak:
+                    print(f"Reading {op.basename(pak_path)}")
+                    f = HGPakFile(pak, compressor)
+                    f.read()
+                    file_count += f.unpack(output, None, req_contents)
+        else:
+            for filename in filenames:
+                if op.isdir(filename):
+                    for fname in os.listdir(filename):
+                        if not fname.lower().endswith(".pak"):
+                            print(f"{fname} is not a valid path to extract.")
+                            continue
+                        print(f"Reading {fname}")
+                        with open(op.join(filename, fname), "rb") as pak:
+                            f = HGPakFile(pak, compressor)
+                            f.read()
+                            # generate a list of the contained files
+                            fullpath = op.join(op.realpath(filename), fname)
+                            filename_data[fullpath] = f.filenames
+                            if not args.list:
+                                file_count += f.unpack(output, args.filter)
+                        pack_count += 1
+                else:
+                    with open(filename, "rb") as pak:
                         f = HGPakFile(pak, compressor)
                         f.read()
                         # generate a list of the contained files
-                        filename_data[fname] = f.filenames
+                        filename_data[op.realpath(filename)] = f.filenames
                         if not args.list:
-                            file_count += f.unpack_all(output, args.filter)
+                            file_count += f.unpack(output, args.filter)
                     pack_count += 1
-            else:
-                with open(filename, "rb") as pak:
-                    f = HGPakFile(pak, compressor)
-                    f.read()
-                    # generate a list of the contained files
-                    filename_data[fname] = f.filenames
-                    if not args.list:
-                        file_count += f.unpack_all(output, args.filter)
-                pack_count += 1
 
         if args.list:
             if args.plain:
