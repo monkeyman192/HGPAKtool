@@ -1,10 +1,11 @@
 __author__ = "monkeyman192"
-__version__ = "1.0"
+__version__ = "1.0.1"
 
 import argparse
 import array
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 from contextvars import ContextVar
+from enum import Enum
 import fnmatch
 from functools import lru_cache
 import hashlib
@@ -13,6 +14,7 @@ import json
 import os
 import os.path as op
 import pathlib
+import platform
 import shutil
 import struct
 import sys
@@ -24,11 +26,23 @@ from typing import Iterator, Optional
 from OodleCompressor import OodleCompressor, OodleDecompressionError
 from utils import OSCONST
 
+# Try import both lz4 and zstd.
+# zstd is only required for windows, and lz4 is only required for mac, so if either fails, don't break
+# immediately, only break once we know what platform we are targeting.
+
+zstd_imported = False
 try:
     import zstandard as zstd
+    zstd_imported = True
 except ModuleNotFoundError:
-    print("You need to install zstandard for this code to work. Please run `pip install zstandard`")
-    sys.exit(1)
+    pass
+
+lz4_imported = False
+try:
+    import lz4.block
+    lz4_imported = True
+except ModuleNotFoundError:
+    pass
 
 
 FILEINFO = namedtuple("FILEINFO", ["file_hash", "start_offset", "decompressed_size"])
@@ -43,9 +57,27 @@ CLEAN_BYTES = b"\x00" * DECOMPRESSED_CHUNK_SIZE
 ctx_verbose = ContextVar("verbose")
 ctx_verbose.set(False)
 
+ctx_dryrun = ContextVar("dryrun")
+ctx_dryrun.set(False)
+
 
 class InvalidFileException(Exception):
     pass
+
+
+class Platform(Enum):
+    WINDOWS = "windows"
+    MAC = "mac"
+    SWITCH = "switch"
+
+
+platform_map = defaultdict(
+    lambda: "windows",
+    {
+        "Windows": "windows",
+        "Darwin": "mac",
+    },
+)
 
 
 def reqChunkBytes(chunk_size: int):
@@ -74,18 +106,20 @@ def padding(x: int):
 
 
 class Compressor():
-    def __init__(self, mode: str = "MAC"):
-        self.mode = mode
-        if self.mode == "MAC":
+    def __init__(self, platform: Platform = Platform.WINDOWS):
+        self.platform = platform
+        if self.platform == Platform.WINDOWS:
             # TEMP fix for decompression. Won't work for compression.
             self.compressor = zstd.ZstdDecompressor()
-        else:
+        elif self.platform == Platform.MAC:
+            self.compressor = lz4.block
+        else:  # SWITCH
             self.compressor = OodleCompressor(
                 op.join(op.dirname(__file__), "lib", OSCONST.LIB_NAME)
             )
 
     def compress(self, buffer: memoryview) -> bytes:
-        if self.mode == "MAC":
+        if self.platform == Platform.WINDOWS or self.platform == Platform.MAC:
             return self.compressor.compress(
                 buffer,
                 store_size=False,
@@ -97,13 +131,23 @@ class Compressor():
             )
 
     def decompress(self, data: bytes) -> bytes:
-        if self.mode == "MAC":
+        if self.platform == Platform.WINDOWS:
             try:
                 return self.compressor.decompress(
                         data,
                         max_output_size=DECOMPRESSED_CHUNK_SIZE
                     )
             except zstd.ZstdError:
+                if len(data) == DECOMPRESSED_CHUNK_SIZE:
+                    # In this case the block was just not compressed. Return it.
+                    return data
+        elif self.platform == Platform.MAC:
+            try:
+                return self.compressor.decompress(
+                        data,
+                        uncompressed_size=DECOMPRESSED_CHUNK_SIZE
+                    )
+            except lz4.block.LZ4BlockError:
                 if len(data) == DECOMPRESSED_CHUNK_SIZE:
                     # In this case the block was just not compressed. Return it.
                     return data
@@ -429,7 +473,10 @@ class HGPakFile():
                 print(f"There was an issue decompressing chunk {start_chunk}")
                 print(f"Unable to extract file: {fpath}")
                 return
-            _data.write(decompressed[first_off:last_off])
+            if last_off:
+                _data.write(decompressed[first_off:last_off])
+            else:
+                _data.write(decompressed[first_off:])
         else:
             for chunk_idx in range(start_chunk, end_chunk + 1):
                 decompressed = self.decompress_chunk(chunk_idx)
@@ -440,16 +487,23 @@ class HGPakFile():
                 if chunk_idx == start_chunk:
                     _data.write(decompressed[first_off:])
                 elif chunk_idx == end_chunk:
-                    _data.write(decompressed[:last_off])
+                    if not last_off:
+                        _data.write(decompressed[:])
+                    else:
+                        _data.write(decompressed[:last_off])
                 else:
                     _data.write(decompressed)
+        if _data.tell() != finf.size:
+            print(f"There was an error extracting the file {fpath}")
+            print(f"File info details: {finf} {first_off} {last_off}")
         # Now write the file out.
         _export_path, fname = op.split(fpath)
         dir_ = op.join(out_dir, _export_path)
         if dir_:
             os.makedirs(dir_, exist_ok=True)
-        with open(op.join(dir_, fname), "wb") as f:
-            f.write(_data.getbuffer())
+        if not ctx_dryrun.get():
+            with open(op.join(dir_, fname), "wb") as f:
+                f.write(_data.getbuffer())
 
     def _extract_file_uncompressed(self, fpath: str, out_dir: str):
         finf = self.files.get(fpath)
@@ -461,8 +515,9 @@ class HGPakFile():
         dir_ = op.join(out_dir, _export_path)
         if dir_:
             os.makedirs(dir_, exist_ok=True)
-        with open(op.join(dir_, fname), "wb") as f:
-            f.write(self.fobj.read(finf.size))
+        if not ctx_dryrun.get():
+            with open(op.join(dir_, fname), "wb") as f:
+                f.write(self.fobj.read(finf.size))
 
     def compress(self):
         """ Compress an archive. """
@@ -656,17 +711,50 @@ if __name__ == '__main__':
         help="Log extra info when (un)packing archives",
     )
     parser.add_argument(
-        "-S",
-        "--switch",
-        action="store_true",
-        default=False,
-        help="If provided, (un)pack as a switch pak file.",
+        "--platform",
+        choices=("windows", "mac", "switch"),
+        default=platform_map[platform.system()],
+        const=platform_map[platform.system()],
+        nargs="?",
+        help="The platform to unpack the files for. Default: %(default)s.",
     )
     parser.add_argument(
         "-Z",
         "--compress",
         action="store_true",
         help="Whether or not to compress the provided files."
+    )
+    parser.add_argument(
+        "-O",
+        "--output",
+        required=False,
+        help=(
+            "The directory to place extracted files in. If not provided, falls back to a folder called "
+            "'EXPORTED' in the current directory."
+        )
+    )
+    parser.add_argument(
+        "-f",
+        "--filter",
+        action="append",
+        help="A glob pattern which can be used to filter out the files which are to be extracted."
+    )
+    parser.add_argument(
+        "-j",
+        "--json",
+        help=(
+            "The path to a json file which can be used to indicate the files to be unpacked.\n"
+            "The keys to the json are the paths (either relative or absolute) to the pak's that are to be "
+            "extracted, and the values are the files within these pak's to extract.\n"
+            "If the pak paths are relative, then a 'filename' argument MUST be passed which is the root "
+            "directory of the provided pak names."
+        )
+    )
+    parser.add_argument(
+        "--dryrun",
+        action="store_true",
+        default=False,
+        help=argparse.SUPPRESS,
     )
     pup_group = parser.add_mutually_exclusive_group()  # pup = pack/unpack
     pup_group.add_argument(
@@ -700,21 +788,6 @@ if __name__ == '__main__':
             "and listed contents."
         )
     )
-    parser.add_argument(
-        "-O",
-        "--output",
-        required=False,
-        help=(
-            "The directory to place extracted files in. If not provided, falls back to a folder called "
-            "'EXPORTED' in the current directory."
-        )
-    )
-    parser.add_argument(
-        "-f",
-        "--filter",
-        action="append",
-        help="A glob pattern which can be used to filter out the files which are to be extracted."
-    )
 
     args = parser.parse_args()
     filenames = args.filenames
@@ -731,11 +804,20 @@ if __name__ == '__main__':
     if args.verbose is True:
         ctx_verbose.set(True)
 
-    if args.switch:
-        platform = "SWITCH"
-    else:
-        platform = "MAC"
-    compressor = Compressor(platform)
+    if args.dryrun is True:
+        ctx_dryrun.set(True)
+
+    plat = Platform(args.platform)
+    if plat == Platform.WINDOWS:
+        if zstd_imported is False:
+            print("You need to install zstandard for this code to work. Please run `pip install zstandard`")
+            sys.exit(1)
+    elif plat == Platform.MAC:
+        if lz4_imported is False:
+            print("You need to install lz4 for this code to work. Please run `pip install lz4`")
+            sys.exit(1)
+
+    compressor = Compressor(plat)
 
     if mode == "unpack":
         output = op.abspath(args.output or "EXTRACTED")
@@ -745,20 +827,43 @@ if __name__ == '__main__':
         pack_count = 0
         file_count = 0
         filename_data: dict[str, list[str]] = {}
-        if (len(filenames) == 1 and filenames[0].lower().endswith(".json")):
+
+        json_file: Optional[str] = None
+        if args.json:
+            json_file = args.json
+        elif len(filenames) == 1 and filenames[0].lower().endswith(".json"):
             json_file = filenames[0]
+
+        if json_file is not None:
+            root_dir = None
+            if len(filenames) > 1:
+                print("Cannot unpack with json from multiple directories. Please only provide one directory")
+                sys.exit(1)
+            elif len(filenames) == 1:
+                if op.exists(filenames[0]) and op.isdir(filenames[0]):
+                    root_dir = filenames[0]
             # In this case, we got a json file which contains a list of paks to unpack from.
             with open(json_file, "r") as f:
                 json_data = json.load(f)
             for pak_path, req_contents in json_data.items():
-                if not pak_path.lower().endswith(".pak"):
-                    print(f"{pak_path} is not a valid path to extract.")
+                abs_pak_path = pak_path
+                if not op.isabs(pak_path):
+                    if root_dir is not None:
+                        abs_pak_path = op.join(root_dir, pak_path)
+                    else:
+                        print(f"Cannot extract {pak_path} as it's a relative path. "
+                              "Either provide the absolute path, or provide the root directory as the "
+                              "'filename' argument.")
+                        continue
+                if not abs_pak_path.lower().endswith(".pak"):
+                    print(f"Skipping {pak_path}: Not a valid file to extract.")
                     continue
-                with open(pak_path, "rb") as pak:
-                    print(f"Reading {op.basename(pak_path)}")
+                with open(abs_pak_path, "rb") as pak:
+                    print(f"Reading {op.basename(abs_pak_path)}")
                     f = HGPakFile(pak, compressor)
                     f.read()
                     file_count += f.unpack(output, None, req_contents)
+                pack_count += 1
         else:
             for filename in filenames:
                 if op.isdir(filename):

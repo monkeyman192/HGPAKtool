@@ -22,6 +22,8 @@ python -m pip install zstandard
 
 Note that this code requires python 3.9+ to run. If you have a lower version you'll need to install a newer one.
 
+**Note:** If you are wanting to extract .pak files from a mac install of NMS, you will instead require the [lz4](https://pypi.org/project/lz4/) package.
+
 ### Drag and drop functionality.
 
 The `HGPAKTool.bat` file provides drag and drop functionality.
@@ -40,7 +42,7 @@ If you want more control, it is recommended that you run the script directly lik
 If you do this, you can provide a number of other options such as the `-f` flag which will export only the files which match the pattern provided.
 So for example to export all files which contain the phrase "debris", you would do:
 
-`python HGPAKTool/hgpaktool.py -U -f="*debirs*" <path to PCBANKS folder>`
+`python HGPAKTool/hgpaktool.py -U -f="*debris*" <path to PCBANKS folder>`
 
 Multiple `-f` flags can be provided to filter multiple sets of files out. Note that these combine additively.
 The flag can also be used to pull out a single specific file if one provided the complete path to the file (if it is known).
