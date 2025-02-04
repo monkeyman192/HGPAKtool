@@ -1,5 +1,5 @@
 __author__ = "monkeyman192"
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 import argparse
 import array
@@ -44,12 +44,18 @@ try:
 except ModuleNotFoundError:
     pass
 
+try:
+    import json5 as json
+except ModuleNotFoundError:
+    pass
+
 
 FILEINFO = namedtuple("FILEINFO", ["file_hash", "start_offset", "decompressed_size"])
 FILEINFO_FMT = "<16s2Q"
 CHUNKINFO = namedtuple("CHUNKINFO", ["size", "offset"])
 
-# The game decompresses chunks to this size blocks (128kb)
+# The game decompresses chunks to this size blocks (64kb)
+# TODO: This might vary by platform type.
 DECOMPRESSED_CHUNK_SIZE = 0x10000
 CLEAN_BYTES = b"\x00" * DECOMPRESSED_CHUNK_SIZE
 
@@ -141,6 +147,9 @@ class Compressor():
                 if len(data) == DECOMPRESSED_CHUNK_SIZE:
                     # In this case the block was just not compressed. Return it.
                     return data
+                else:
+                    print("Error decompressing a chunk:")
+                    raise
         elif self.platform == Platform.MAC:
             try:
                 return self.compressor.decompress(
@@ -151,6 +160,9 @@ class Compressor():
                 if len(data) == DECOMPRESSED_CHUNK_SIZE:
                     # In this case the block was just not compressed. Return it.
                     return data
+                else:
+                    print("Error decompressing a chunk:")
+                    raise
         else:
             try:
                 return self.compressor.decompress(
@@ -162,6 +174,9 @@ class Compressor():
                 if len(data) == DECOMPRESSED_CHUNK_SIZE:
                     # In this case the block was just not compressed. Return it.
                     return data
+                else:
+                    print("Error decompressing a chunk:")
+                    raise
 
 
 class File():
@@ -299,6 +314,10 @@ class HGPakHeader():
         self.version, self.fileCount, self.chunk_count, self.is_compressed, self.dataOffset = (
             struct.unpack('<QQQ?7xQ', fobj.read(0x28))
         )
+
+        if ctx_verbose.get() is True:
+            print(f"Pak file {fobj.name} headers:")
+            print(str(self))
 
     def __str__(self):
         return (
@@ -669,7 +688,7 @@ def should_unpack(filenames: list[str]) -> bool:
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        prog="HGPAKtool",
+        prog=f"HGPAKtool ({__version__})",
         description="A tool for handling HG's custom .pak format for mac and switch",
     )
     parser.add_argument(
