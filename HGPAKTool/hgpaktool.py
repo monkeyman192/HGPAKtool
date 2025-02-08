@@ -1,5 +1,5 @@
 __author__ = "monkeyman192"
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 import argparse
 import array
@@ -55,16 +55,21 @@ FILEINFO_FMT = "<16s2Q"
 CHUNKINFO = namedtuple("CHUNKINFO", ["size", "offset"])
 
 # The game decompresses chunks to this size blocks (64kb)
-# TODO: This might vary by platform type.
 DECOMPRESSED_CHUNK_SIZE = 0x10000
 CLEAN_BYTES = b"\x00" * DECOMPRESSED_CHUNK_SIZE
 
 
-ctx_verbose = ContextVar("verbose")
+ctx_verbose: ContextVar[bool] = ContextVar("verbose", default=False)
 ctx_verbose.set(False)
 
-ctx_dryrun = ContextVar("dryrun")
+ctx_dryrun: ContextVar[bool] = ContextVar("dryrun", default=False)
 ctx_dryrun.set(False)
+
+ctx_upper: ContextVar[bool] = ContextVar("upper", default=False)
+ctx_upper.set(False)
+
+
+EMPTY_EXML_DATA = """<?xml version="1.0" encoding="utf-8"?>\n<Data />"""
 
 
 class InvalidFileException(Exception):
@@ -148,6 +153,9 @@ class Compressor():
                     # In this case the block was just not compressed. Return it.
                     return data
                 else:
+                    if data[:2] == b"\x8C\x0A":
+                        print("Provided pak is from the switch. Please add `--platform switch`")
+                        sys.exit(1)
                     print("Error decompressing a chunk:")
                     raise
         elif self.platform == Platform.MAC:
@@ -161,6 +169,9 @@ class Compressor():
                     # In this case the block was just not compressed. Return it.
                     return data
                 else:
+                    if data[:2] == b"\x8C\x0A":
+                        print("Provided pak is from the switch. Please add `--platform switch`")
+                        sys.exit(1)
                     print("Error decompressing a chunk:")
                     raise
         else:
@@ -518,6 +529,9 @@ class HGPakFile():
         # Now write the file out.
         _export_path, fname = op.split(fpath)
         dir_ = op.join(out_dir, _export_path)
+        if ctx_upper.get() is True:
+            dir_ = dir_.upper()
+            fname = fname.upper()
         if dir_:
             os.makedirs(dir_, exist_ok=True)
         if not ctx_dryrun.get():
@@ -532,6 +546,9 @@ class HGPakFile():
         # Now write the file out.
         _export_path, fname = op.split(fpath)
         dir_ = op.join(out_dir, _export_path)
+        if ctx_upper.get() is True:
+            dir_ = dir_.upper()
+            fname = fname.upper()
         if dir_:
             os.makedirs(dir_, exist_ok=True)
         if not ctx_dryrun.get():
@@ -749,7 +766,7 @@ if __name__ == '__main__':
         required=False,
         help=(
             "The directory to place extracted files in. If not provided, falls back to a folder called "
-            "'EXPORTED' in the current directory."
+            "'EXTRACTED' in the current directory."
         )
     )
     parser.add_argument(
@@ -774,6 +791,12 @@ if __name__ == '__main__':
         action="store_true",
         default=False,
         help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--upper",
+        action="store_true",
+        default=False,
+        help="If provided, extracted filenames will be converted to UPPERCASE."
     )
     pup_group = parser.add_mutually_exclusive_group()  # pup = pack/unpack
     pup_group.add_argument(
@@ -826,6 +849,9 @@ if __name__ == '__main__':
     if args.dryrun is True:
         ctx_dryrun.set(True)
 
+    if args.upper is True:
+        ctx_upper.set(True)
+
     plat = Platform(args.platform)
     if plat == Platform.WINDOWS:
         if zstd_imported is False:
@@ -835,6 +861,10 @@ if __name__ == '__main__':
         if lz4_imported is False:
             print("You need to install lz4 for this code to work. Please run `pip install lz4`")
             sys.exit(1)
+    elif plat == Platform.SWITCH:
+        # Decompressed chunk size on switch is 128kb
+        DECOMPRESSED_CHUNK_SIZE_SWITCH = 0x20000
+        CLEAN_BYTES_S = b"\x00" * DECOMPRESSED_CHUNK_SIZE_SWITCH
 
     compressor = Compressor(plat)
 
