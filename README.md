@@ -1,13 +1,9 @@
 # HGPAK tool
 
-This code is designed to read .pak files for the game No Man's Sky on Mac and Nintendo Switch.
-For reading .pak files on PC/PS4/PS5 there are a number of other tools
+This code is designed to read .pak files for the game No Man's Sky on all platforms.
+For decompiling files on PC or mac, the tool will automatically detect the platform, however if you want to decompile .pak files from a specific platform provide the `--platform` flag (see `--help` for extra details).
 
-**NOTE:** This code is a heavy WIP. It is missing many features and is mostly just meant to be used to help others write code in a more convenient for end-users language.
-To that end the code contained within is freely available for modification/conversion to any other language you wish to translate it to.
-
-This code was originally written to handle pak files compressed with the oodle compression algorithm. It turns out that on mac this isn't used even though the HGPAK format header looks the same. Until it's confirmed that the compression on switch is different I'll leave the Oodle code in, but for now the following paragraph is not important.
-Also, this code requires the Oodle dll which is not particularly freely available.
+If you are unpacking files from a switch you will requires the Oodle dll which is not particularly freely available.
 This code contains a way to download it, however you should always verify that the downloaded dll contains no malicious content by scanning it with a virus checker.
 I do not own the link contained in the code and take no responsibility for any issues caused by using the dll which it downloads.
 I have tested it and it seems fine, but you should check yourself.
