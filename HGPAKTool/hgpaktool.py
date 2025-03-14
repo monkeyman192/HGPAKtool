@@ -864,7 +864,7 @@ if __name__ == '__main__':
     elif plat == Platform.SWITCH:
         # Decompressed chunk size on switch is 128kb
         DECOMPRESSED_CHUNK_SIZE = 0x20000
-        CLEAN_BYTES_S = b"\x00" * DECOMPRESSED_CHUNK_SIZE
+        CLEAN_BYTES = b"\x00" * DECOMPRESSED_CHUNK_SIZE
 
     compressor = Compressor(plat)
 
