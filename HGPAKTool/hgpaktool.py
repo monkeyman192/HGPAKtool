@@ -702,7 +702,7 @@ def should_unpack(filenames: list[str]) -> bool:
         or (len(filenames) == 1 and filenames[0].lower().endswith(".json"))
     )
 
-def make_filename_unixhidden(path):
+def make_filename_unixhidden(path: str):
     """Add a dot at the beginning of a filename, respecting its path
 
     Args:
@@ -711,7 +711,7 @@ def make_filename_unixhidden(path):
     Returns:
         hidden (str): The hidden filename version."""
 
-    return os.path.join(os.path.dirname(path), "." + os.path.basename(path))
+    return op.join(op.dirname(path), "." + op.basename(path))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
