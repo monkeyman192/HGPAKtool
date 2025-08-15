@@ -1,5 +1,5 @@
 __author__ = "monkeyman192"
-__version__ = "1.0.3"
+__version__ = "1.0.4"
 
 import argparse
 import array
@@ -702,6 +702,16 @@ def should_unpack(filenames: list[str]) -> bool:
         or (len(filenames) == 1 and filenames[0].lower().endswith(".json"))
     )
 
+def make_filename_unixhidden(path: str):
+    """Add a dot at the beginning of a filename, respecting its path
+
+    Args:
+        path (str): The absolute or relative file path.
+
+    Returns:
+        hidden (str): The hidden filename version."""
+
+    return op.join(op.dirname(path), "." + op.basename(path))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
@@ -953,7 +963,7 @@ if __name__ == '__main__':
             print(f"Listed contents of {pack_count} .pak's in {time.time() - t1:3f}s")
         elif args.contents:
             for pakname, filenames in filename_data.items():
-                with open(f".{pakname}.contents", "w") as f:
+                with open(f"{make_filename_unixhidden(pakname)}.contents", "w") as f:
                     f.write(
                         json.dumps({"filenames": filenames, "root_dir": output})
                     )
@@ -993,7 +1003,7 @@ if __name__ == '__main__':
             else:
                 pak_hash = hashlib.md5(pakname.encode()).digest()
             output = args.output or pakname
-            with open(f".{pakname}.contents", "r") as f:
+            with open(f"{make_filename_unixhidden(pakname)}.contents", "r") as f:
                 _contents = json.loads(f.read())
                 pak_contents = _contents["filenames"]
                 root_dir = _contents["root_dir"]
