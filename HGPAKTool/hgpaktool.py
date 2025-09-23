@@ -530,7 +530,7 @@ class HGPakFile():
         _export_path, fname = op.split(fpath)
         dir_ = op.join(out_dir, _export_path)
         if ctx_upper.get() is True:
-            dir_ = dir_.upper()
+            dir_ = op.join(out_dir, _export_path.upper())
             fname = fname.upper()
         if dir_:
             os.makedirs(dir_, exist_ok=True)
@@ -547,7 +547,7 @@ class HGPakFile():
         _export_path, fname = op.split(fpath)
         dir_ = op.join(out_dir, _export_path)
         if ctx_upper.get() is True:
-            dir_ = dir_.upper()
+            dir_ = op.join(out_dir, _export_path.upper())
             fname = fname.upper()
         if dir_:
             os.makedirs(dir_, exist_ok=True)
