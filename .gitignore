@@ -13,4 +13,8 @@ EXTRACTED/
 *.so
 *.exe
 
+# Generated python build files.
+*.egg-info
+build/*
+
 __pycache__/

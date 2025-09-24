@@ -2,6 +2,6 @@
 SETLOCAL EnableDelayedExpansion ENABLEEXTENSIONS
 cd /d "%~dp0"
 
-python ./HGPAKTool/hgpaktool.py -U --platform switch %*
+python ./hgpaktool/hgpaktool.py -U --platform switch %*
 
 pause

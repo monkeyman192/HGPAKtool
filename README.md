@@ -33,17 +33,17 @@ To unpack your entire PCBANKS folder simply drag the entire folder onto the .bat
 
 If you want more control, it is recommended that you run the script directly like so:
 
-`python HGPAKTool/hgpaktool.py -U <path to PCBANKS folder>`
+`python hgpaktool/hgpaktool.py -U <path to PCBANKS folder>`
 
 If you do this, you can provide a number of other options such as the `-f` flag which will export only the files which match the pattern provided.
 So for example to export all files which contain the phrase "debris", you would do:
 
-`python HGPAKTool/hgpaktool.py -U -f="*debris*" <path to PCBANKS folder>`
+`python hgpaktool/hgpaktool.py -U -f="*debris*" <path to PCBANKS folder>`
 
 Multiple `-f` flags can be provided to filter multiple sets of files out. Note that these combine additively.
 The flag can also be used to pull out a single specific file if one provided the complete path to the file (if it is known).
 
-For a complete list of the possible options, run `python HGPAKTool/hgpaktool.py --help`
+For a complete list of the possible options, run `python hgpaktool/hgpaktool.py --help`
 
 Dragging multiple files which are not .pak files onto the bat will pack them up and compress them.
 NOTE: compressed switch packing currently not supported.
