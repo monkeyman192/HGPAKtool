@@ -267,13 +267,13 @@ class HGPAKFile:
             files = set()
             if isinstance(filters, str):
                 if "*" in filters:
-                    files.update(fnmatch.filter(self.files, filters))
+                    files.update(fnmatch.filter(self.files, filters.lower()))
                 else:
                     files.add(filters.lower())
             else:
                 for filter_ in filters:
                     if "*" in filter_:
-                        files.update(fnmatch.filter(self.files, filter_))
+                        files.update(fnmatch.filter(self.files, filter_.lower()))
                     else:
                         files.add(filter_.lower())
         else:
@@ -326,15 +326,15 @@ class HGPAKFile:
             files = set()
             if isinstance(filters, str):
                 if "*" in filters:
-                    files.update(fnmatch.filter(self.files, filters))
+                    files.update(fnmatch.filter(self.files, filters.lower()))
                 else:
-                    files.add(filters)
+                    files.add(filters.lower())
             else:
                 for filter_ in filters:
                     if "*" in filter_:
-                        files.update(fnmatch.filter(self.files, filter_))
+                        files.update(fnmatch.filter(self.files, filter_.lower()))
                     else:
-                        files.add(filter_)
+                        files.add(filter_.lower())
         else:
             files = self.files
         if len(files) == 0:
