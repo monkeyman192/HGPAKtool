@@ -2,10 +2,20 @@ import os
 import os.path as op
 import shutil
 from pathlib import Path
+from typing import Literal
+
+import pytest
 
 from hgpaktool import HGPAKFile
 
 DATA_DIR = op.join(op.dirname(__file__), "data")
+
+
+# TODO: Add switch?
+plat_map = {
+    "windows": "pc",
+    "mac": "macos",
+}
 
 
 def get_files(fpath: os.PathLike) -> list[str]:
@@ -16,8 +26,9 @@ def get_files(fpath: os.PathLike) -> list[str]:
     return file_list
 
 
-def test_read(tmp_path: Path):
-    with HGPAKFile(op.join(DATA_DIR, "NMSARC.MeshPlanetSKY.pak")) as pak:
+@pytest.mark.parametrize("platform", ("windows", "mac"))
+def test_read(tmp_path: Path, platform: Literal["windows", "mac"]):
+    with HGPAKFile(op.join(DATA_DIR, f"NMSARC.MeshPlanetSKY.{platform}.pak"), platform) as pak:
         assert len(pak.filenames) == 6
         # Extract the files to a temporary directory and analyse it
         pak.unpack(tmp_path)
@@ -34,10 +45,28 @@ def test_read(tmp_path: Path):
             assert str(final_path).upper() == str(final_path)
 
 
-def test_filtered_extraction():
-    with HGPAKFile(op.join(DATA_DIR, "NMSARC.MeshPlanetSKY.pak")) as pak:
+@pytest.mark.parametrize("platform", ("windows", "mac"))
+def test_filtered_extraction(platform: Literal["windows", "mac"]):
+    with HGPAKFile(op.join(DATA_DIR, f"NMSARC.MeshPlanetSKY.{platform}.pak"), platform) as pak:
+        print(pak.filenames)
         assert len([x for x in pak.extract("*rainbowplane*")]) == 2
         assert len([x for x in pak.extract("*RAINBOWPLANE*")]) == 2
         assert len([x for x in pak.extract(["*rainbowplane*", "*skycube*"])]) == 4
-        assert len([x for x in pak.extract("models/planets/sky/skysphere.geometry.mbin.pc")]) == 1
-        assert len([x for x in pak.extract("MODELS/PLANETS/SKY/SKYSPHERE.GEOMETRY.MBIN.PC")]) == 1
+        assert (
+            len([x for x in pak.extract(f"models/planets/sky/skysphere.geometry.mbin.{plat_map[platform]}")])
+            == 1
+        )
+        assert (
+            len(
+                [
+                    x
+                    for x in pak.extract(
+                        f"MODELS/PLANETS/SKY/SKYSPHERE.GEOMETRY.MBIN.{plat_map[platform].upper()}"
+                    )
+                ]
+            )
+            == 1
+        )
+
+
+# TODO: Add test for switch pak's.

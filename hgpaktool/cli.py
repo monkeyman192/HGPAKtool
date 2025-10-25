@@ -8,6 +8,7 @@ import sys
 import time
 from typing import Literal, Optional
 
+import hgpaktool.constants
 from hgpaktool import __version__
 from hgpaktool.api import HGPAKFile
 from hgpaktool.os_funcs import Platform, platform_map
@@ -188,8 +189,8 @@ def run():
             sys.exit(1)
     elif args.platform == Platform.SWITCH:
         # Decompressed chunk size on switch is 128kb
-        DECOMPRESSED_CHUNK_SIZE = 0x20000
-        CLEAN_BYTES = b"\x00" * DECOMPRESSED_CHUNK_SIZE  # noqa
+        hgpaktool.constants.DECOMPRESSED_CHUNK_SIZE = 0x20000
+        hgpaktool.constants.CLEAN_BYTES = b"\x00" * hgpaktool.constants.DECOMPRESSED_CHUNK_SIZE  # noqa
 
     if mode == "unpack":
         output = op.abspath(args.output or "EXTRACTED")
