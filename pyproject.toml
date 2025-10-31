@@ -44,6 +44,9 @@ dev = [
 json5 = [
   "json5",
 ]
+builder = [
+  "pyinstaller",
+]
 
 [tool.uv]
 python-preference = "only-system"
