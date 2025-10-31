@@ -30,7 +30,7 @@ jobs:
           {version: '3.14'},
         ]
         os: [
-          {name: 'Ubuntu-latest'},
+          # {name: 'Ubuntu-latest'},
           {name: 'Windows-2025'},
         ]
     steps:
@@ -83,7 +83,7 @@ jobs:
     strategy:
       matrix:
         os: [
-          {name: 'Ubuntu-latest'},
+          # {name: 'Ubuntu-latest'},
           {name: 'Windows-2025'},
         ]
     needs:
@@ -92,10 +92,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Set up Python 3.14
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: "3.11"
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip uv
@@ -106,7 +106,7 @@ jobs:
       - name: Build HGPAKTool linux binary
         if: matrix.os.name == 'Ubuntu-latest'
         run: uv run pyinstaller hgpaktool/cli.py --onefile --name hgpaktool
-      - name: Upload Wheels
+      - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.os.name }}
