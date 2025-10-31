@@ -83,7 +83,7 @@ jobs:
     strategy:
       matrix:
         os: [
-          # {name: 'Ubuntu-latest'},
+          {name: 'Ubuntu-latest'},
           {name: 'Windows-2025'},
         ]
     needs:
