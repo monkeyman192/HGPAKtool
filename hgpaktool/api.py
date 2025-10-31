@@ -1,12 +1,13 @@
 import fnmatch
+import hashlib
 import os
 import os.path as op
 import struct
 from collections import namedtuple
 from functools import lru_cache
 from io import SEEK_CUR, SEEK_SET, BufferedReader, BufferedWriter, BytesIO
-from logging import getLogger
-from typing import Iterable, Literal, NamedTuple, Union
+from logging import NullHandler, getLogger
+from typing import Iterable, Literal, Mapping, NamedTuple, Optional, Union
 
 from hgpaktool.compressors import Compressor
 from hgpaktool.constants import DECOMPRESSED_CHUNK_SIZE, Platform
@@ -14,16 +15,16 @@ from hgpaktool.utils import determine_bins, reqChunkBytes
 
 
 class FILEINFO(NamedTuple):
-    file_hash: str
     start_offset: int
     decompressed_size: int
 
 
-FILEINFO_FMT = "<16s2Q"
+FILEINFO_FMT = "<16x2Q"
 CHUNKINFO = namedtuple("CHUNKINFO", ["size", "offset"])
 
 
 logger = getLogger(__name__)
+logger.addHandler(NullHandler())
 
 
 class InvalidFileException(Exception):
@@ -33,14 +34,18 @@ class InvalidFileException(Exception):
 class PackedFile:
     """This represents a packed file within the HGPAK file"""
 
-    __slots__ = ("offset", "size", "path", "_in_chunks", "hash_")
+    __slots__ = ("offset", "size", "path", "_in_chunks")
 
-    def __init__(self, offset: int, size: int, path: str, hash_):
+    def __init__(self, offset: int, size: int, path: str):
         self.offset = offset
         self.size = size
         self.path = path
         self._in_chunks = None
-        self.hash_ = hash_
+
+    @property
+    def filename_hash(self):
+        # This hash is the md5 hash of the name.
+        return hashlib.md5(self.path.encode()).digest()
 
     @property
     def in_chunks(self) -> tuple[int, int]:
@@ -67,7 +72,7 @@ class PackedFile:
     def __str__(self):
         return (
             f"File: {self.path}: Offset: 0x{self.offset:X}, Size: 0x{self.size:X}, "
-            f"In chunks: {self.in_chunks}, Hash: {int.from_bytes(self.hash_, 'little')}"
+            f"In chunks: {self.in_chunks}"
         )
 
     def __repr__(self):
@@ -133,7 +138,7 @@ class HGPAKFile:
 
     def __init__(
         self,
-        filepath: str,
+        filepath: Union[str, os.PathLike[str]],
         platform: Union[Platform, Literal["windows", "mac", "switch"]] = Platform.WINDOWS,
     ):
         self.compressor = Compressor(platform)
@@ -194,9 +199,7 @@ class HGPAKFile:
             for i, fname in enumerate(self.filenames):
                 if fname:
                     finf = self.fileIndex.fileInfo[i + 1]
-                    self.files[fname] = PackedFile(
-                        finf.start_offset, finf.decompressed_size, fname, finf.file_hash
-                    )
+                    self.files[fname] = PackedFile(finf.start_offset, finf.decompressed_size, fname)
             return
 
         if self.header.is_compressed:
@@ -220,7 +223,10 @@ class HGPAKFile:
         # Decompress these chunks to read the filenames.
         first_chunks = b""
         for i in range(chunks_for_filenames):
-            first_chunks += self._decompress_chunk(i)
+            if (_chunk := self._decompress_chunk(i)) is not None:
+                first_chunks += _chunk
+            else:
+                logger.error(f"There was an error reading the filename section for {self.fpath}")
         self.filenames = [
             x.decode()
             for x in first_chunks[: self.fileIndex.fileInfo[0].decompressed_size]
@@ -232,14 +238,88 @@ class HGPAKFile:
             if fname:
                 finf = self.fileIndex.fileInfo[i + 1]
                 self.files[fname] = PackedFile(
-                    finf.start_offset - self.header.dataOffset, finf.decompressed_size, fname, finf.file_hash
+                    finf.start_offset - self.header.dataOffset, finf.decompressed_size, fname
                 )
 
     @lru_cache(maxsize=256)
-    def _decompress_chunk(self, chunkIdx: int):
+    def _decompress_chunk(self, chunkIdx: int) -> Optional[bytes]:
         self.fobj.seek(self.chunkIndex.chunk_offset[chunkIdx], SEEK_SET)
         chunk_size = self.chunkIndex.chunk_sizes[chunkIdx]
         return self.compressor.decompress(self.fobj.read(chunk_size))
+
+    def _get_filtered_filelist(
+        self, filters: Union[list[str], str, None] = None
+    ) -> Mapping[str, Optional[PackedFile]]:
+        """Filter the known file list.
+        This returns a dictionary instead of a set so that the order is always the same.
+        """
+        files = {}
+        if filters is not None:
+            if isinstance(filters, str):
+                if "*" in filters:
+                    for filtered in fnmatch.filter(self.files, filters.lower()):
+                        files[filtered] = None
+                else:
+                    files[filters.lower()] = None
+            else:
+                for filter_ in filters:
+                    if "*" in filter_:
+                        for filtered in fnmatch.filter(self.files, filter_.lower()):
+                            files[filtered] = None
+                    else:
+                        files[filter_.lower()] = None
+        else:
+            files = self.files
+        return files
+
+    def get_hashes(
+        self,
+        filters: Union[list[str], str, None] = None,
+        mask_guid: bool = False,
+        algorithm: str = "md5",
+    ) -> Iterable[tuple[str, str]]:
+        """Generate hashes for the specified file(s) in the pak.
+
+        Parameters
+        ----------
+        filters:
+            An optional list of glob patterns to pattern match against when extracting.
+            Only files which match the pattern will be extracted.
+            This can also just be a single string in which case just this file will be extracted.
+        mask_guid:
+            If True, the GUID in the mbin file will be masked.
+            This will only happen if the file is an mbin file (checked base on the magic), otherwise it will
+            do nothing.
+        algorithm:
+            The name of the algorithm. This must be one provided by python (cf. hashlib.algorithms_available).
+
+        Returns
+        -------
+        An iterable over the hashes.
+        This will always be an iterable even if a single filename is passed in.
+        """
+        files = self._get_filtered_filelist(filters)
+
+        if len(files) == 0:
+            return
+
+        func = self._extractor_function
+        _base_hash = hashlib.new(algorithm)
+        for fpath in files:
+            _hash = _base_hash.copy()
+            for i, chunk in enumerate(func(fpath)):
+                if len(chunk) == 0:
+                    continue
+                if i == 0:
+                    if mask_guid:
+                        magic = chunk[:8]
+                        if (
+                            magic == b"\xcc\xcc\xcc\xcc\xcc\xcc\xcc\xcc"
+                            or magic == b"\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd"
+                        ):
+                            chunk = chunk[:0x10] + b"\x00" * 8 + chunk[0x18:]
+                _hash.update(chunk)
+            yield (fpath, _hash.hexdigest().upper())
 
     def extract(
         self,
@@ -263,24 +343,11 @@ class HGPAKFile:
         An iterable over the extracted files.
         This will always be an iterable even if a single filename is passed in.
         """
-        if filters is not None:
-            files = set()
-            if isinstance(filters, str):
-                if "*" in filters:
-                    files.update(fnmatch.filter(self.files, filters.lower()))
-                else:
-                    files.add(filters.lower())
-            else:
-                for filter_ in filters:
-                    if "*" in filter_:
-                        files.update(fnmatch.filter(self.files, filter_.lower()))
-                    else:
-                        files.add(filter_.lower())
-        else:
-            files = self.files
+        files = self._get_filtered_filelist(filters)
 
         if len(files) == 0:
             return
+
         func = self._extractor_function
         for fpath in files:
             buffer = BytesIO()
@@ -321,26 +388,13 @@ class HGPAKFile:
         -------
         Total number of files unpacked.
         """
-        i = 0
-        if filters is not None:
-            files = set()
-            if isinstance(filters, str):
-                if "*" in filters:
-                    files.update(fnmatch.filter(self.files, filters.lower()))
-                else:
-                    files.add(filters.lower())
-            else:
-                for filter_ in filters:
-                    if "*" in filter_:
-                        files.update(fnmatch.filter(self.files, filter_.lower()))
-                    else:
-                        files.add(filter_.lower())
-        else:
-            files = self.files
+        files = self._get_filtered_filelist(filters)
+
         if len(files) == 0:
             return 0
 
         # Loop over the files to extract their contained data.
+        i = 0
         func = self._extractor_function
         for fpath in files:
             _export_path, fname = op.split(fpath)
@@ -377,8 +431,8 @@ class HGPAKFile:
             # The data is contained entirely within the same chunk.
             decompressed = self._decompress_chunk(start_chunk)
             if decompressed is None:
-                print(f"There was an issue decompressing chunk {start_chunk}")
-                print(f"Unable to extract file: {fpath}")
+                logger.error(f"There was an issue decompressing chunk {start_chunk}")
+                logger.error(f"Unable to extract file: {fpath}")
                 return
             if last_off:
                 bytes_read += last_off - first_off
@@ -390,8 +444,8 @@ class HGPAKFile:
             for chunk_idx in range(start_chunk, end_chunk + 1):
                 decompressed = self._decompress_chunk(chunk_idx)
                 if decompressed is None:
-                    print(f"There was an issue decompressing chunk {chunk_idx}")
-                    print(f"Unable to extract file: {fpath}")
+                    logger.error(f"There was an issue decompressing chunk {chunk_idx}")
+                    logger.error(f"Unable to extract file: {fpath}")
                     return
                 if chunk_idx == start_chunk:
                     bytes_read += len(decompressed) - first_off
@@ -437,36 +491,3 @@ class HGPAKFile:
     def pack(self):
         # Implement later...
         raise NotImplementedError("Re-packing support currently not enabled")
-
-
-if __name__ == "__main__":
-    import time
-
-    filename_mapping: dict[str, HGPAKFile] = {}
-    namehash_guid_mapping: dict[int, int] = {}
-
-    limit = 0
-
-    t1 = time.perf_counter()
-    loaded_paks = 0
-    pak_dir = r"C:\Program Files (x86)\Steam\steamapps\common\No Man's Sky\GAMEDATA\PCBANKS"
-    for fname in os.listdir(pak_dir):
-        if fname.endswith(".pak"):
-            print(f"Parsing {fname}")
-            with HGPAKFile(op.join(pak_dir, fname)) as pak:
-                for _fname in pak.filenames:
-                    filename_mapping[_fname] = pak
-                    if _fname.lower().endswith(".mbin"):
-                        for fname, _data in pak.extract(_fname, max_bytes=0x20):
-                            namehash, guid = struct.unpack("<12xIQ8x", _data)
-                            namehash_guid_mapping[namehash] = guid
-                            if namehash == 0x2E:
-                                print(_fname)
-
-                loaded_paks += 1
-    print(
-        f"Parsed {loaded_paks} pak files with {len(filename_mapping)} files in "
-        f"{time.perf_counter() - t1:.6f}s"
-    )
-    # for namehash, guid in namehash_guid_mapping.items():
-    #     print(hex(namehash), hex(guid))

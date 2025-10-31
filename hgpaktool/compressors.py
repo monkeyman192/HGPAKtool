@@ -1,6 +1,7 @@
 import os.path as op
 import sys
-from typing import Literal, Union, cast
+from logging import NullHandler, getLogger
+from typing import Literal, Optional, Union, cast
 
 from hgpaktool.constants import Platform
 from hgpaktool.oodle import OodleCompressor, OodleDecompressionError
@@ -8,8 +9,8 @@ from hgpaktool.os_funcs import OSCONST
 
 # Try import both lz4 and zstd.
 # zstd is only required for windows, and lz4 is only required for mac, so if either fails, don't break
-# immediately, only break once we know what platform we are targeting.
-
+# immediately, since we may not need it. An error will already be raised by the api if attempting to read a
+# file without the required libraries installed.
 try:
     import zstandard as zstd
 except ModuleNotFoundError:
@@ -21,6 +22,10 @@ except ModuleNotFoundError:
     pass
 
 
+logger = getLogger(__name__)
+logger.addHandler(NullHandler())
+
+
 class Compressor:
     def __init__(self, platform: Union[Platform, Literal["windows", "mac", "switch"]] = Platform.WINDOWS):
         self.platform = platform
@@ -28,12 +33,16 @@ class Compressor:
             # TEMP fix for decompression. Won't work for compression.
             self.compressor = zstd.ZstdDecompressor()
             self.decompressed_chunk_size = 0x10000
+            self._decompress_func = self._decompress_windows
         elif self.platform == Platform.MAC:
             self.compressor = lz4.block
             self.decompressed_chunk_size = 0x20000
-        else:  # SWITCH
+            self._decompress_func = self._decompress_mac
+        else:
+            # Switch and maybe other consoles?
             self.compressor = OodleCompressor(op.join(op.dirname(__file__), "lib", OSCONST.LIB_NAME))
             self.decompressed_chunk_size = 0x20000
+            self._decompress_func = self._decompress_switch
 
     def compress(self, buffer: memoryview) -> bytes:
         if self.platform == Platform.WINDOWS:
@@ -53,43 +62,49 @@ class Compressor:
             self.compressor = cast(OodleCompressor, self.compressor)
             return self.compressor.compress(buffer.tobytes("A"), self.decompressed_chunk_size)
 
-    def decompress(self, data: bytes) -> bytes:
-        if self.platform == Platform.WINDOWS:
-            self.compressor = cast(zstd.ZstdDecompressor, self.compressor)
-            try:
-                return self.compressor.decompress(data, max_output_size=self.decompressed_chunk_size)
-            except zstd.ZstdError:
-                if len(data) == self.decompressed_chunk_size:
-                    # In this case the block was just not compressed. Return it.
-                    return data
-                else:
-                    if data[:2] == b"\x8c\x0a":
-                        print("Provided pak is from the switch. Please add `--platform switch`")
-                        sys.exit(1)
-                    print("Error decompressing a chunk:")
-                    raise
-        elif self.platform == Platform.MAC:
-            self.compressor = cast(lz4.block, self.compressor)
-            try:
-                return self.compressor.decompress(data, uncompressed_size=self.decompressed_chunk_size)
-            except lz4.block.LZ4BlockError:
-                if len(data) == self.decompressed_chunk_size:
-                    # In this case the block was just not compressed. Return it.
-                    return data
-                else:
-                    if data[:2] == b"\x8c\x0a":
-                        print("Provided pak is from the switch. Please add `--platform switch`")
-                        sys.exit(1)
-                    print("Error decompressing a chunk:")
-                    raise
-        else:
-            self.compressor = cast(OodleCompressor, self.compressor)
-            try:
-                return self.compressor.decompress(data, len(data), self.decompressed_chunk_size)
-            except OodleDecompressionError:
-                if len(data) == self.decompressed_chunk_size:
-                    # In this case the block was just not compressed. Return it.
-                    return data
-                else:
-                    print("Error decompressing a chunk:")
-                    raise
+    def _decompress_windows(self, data: bytes) -> Optional[bytes]:
+        self.compressor = cast(zstd.ZstdDecompressor, self.compressor)
+        try:
+            return self.compressor.decompress(data, max_output_size=self.decompressed_chunk_size)
+        except zstd.ZstdError:
+            if len(data) == self.decompressed_chunk_size:
+                # In this case the block was just not compressed. Return it.
+                return data
+            else:
+                if data[:2] == b"\x8c\x0a":
+                    logger.error("Provided pak is from the switch. Please add `--platform switch`")
+                    sys.exit(1)
+                logger.exception("Error decompressing a chunk:")
+                return None
+
+    def _decompress_mac(self, data: bytes) -> Optional[bytes]:
+        self.compressor = cast(lz4.block, self.compressor)
+        try:
+            return self.compressor.decompress(data, uncompressed_size=self.decompressed_chunk_size)
+        except lz4.block.LZ4BlockError:
+            if len(data) == self.decompressed_chunk_size:
+                # In this case the block was just not compressed. Return it.
+                return data
+            else:
+                if data[:2] == b"\x8c\x0a":
+                    logger.error("Provided pak is from the switch. Please add `--platform switch`")
+                    sys.exit(1)
+                logger.exception("Error decompressing a chunk:")
+                return None
+
+    def _decompress_switch(self, data: bytes) -> Optional[bytes]:
+        self.compressor = cast(OodleCompressor, self.compressor)
+        try:
+            return self.compressor.decompress(data, len(data), self.decompressed_chunk_size)
+        except OodleDecompressionError:
+            if len(data) == self.decompressed_chunk_size:
+                # In this case the block was just not compressed. Return it.
+                return data
+            else:
+                logger.exception("Error decompressing a chunk:")
+                return None
+
+    def decompress(self, data: bytes) -> Optional[bytes]:
+        """Decompress the provided data blob. This will be decompressed based on the platform specified for
+        this compressor object."""
+        return self._decompress_func(data)

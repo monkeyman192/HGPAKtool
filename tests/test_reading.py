@@ -7,6 +7,7 @@ from typing import Literal
 import pytest
 
 from hgpaktool import HGPAKFile
+from hgpaktool.api import InvalidFileException
 
 DATA_DIR = op.join(op.dirname(__file__), "data")
 
@@ -48,7 +49,6 @@ def test_read(tmp_path: Path, platform: Literal["windows", "mac"]):
 @pytest.mark.parametrize("platform", ("windows", "mac"))
 def test_filtered_extraction(platform: Literal["windows", "mac"]):
     with HGPAKFile(op.join(DATA_DIR, f"NMSARC.MeshPlanetSKY.{platform}.pak"), platform) as pak:
-        print(pak.filenames)
         assert len([x for x in pak.extract("*rainbowplane*")]) == 2
         assert len([x for x in pak.extract("*RAINBOWPLANE*")]) == 2
         assert len([x for x in pak.extract(["*rainbowplane*", "*skycube*"])]) == 4
@@ -67,6 +67,12 @@ def test_filtered_extraction(platform: Literal["windows", "mac"]):
             )
             == 1
         )
+
+
+def test_invalid_pak():
+    with pytest.raises(InvalidFileException):
+        with HGPAKFile(op.join(DATA_DIR, "NMSARC.MeshPlanetSKY.invalid.pak")):
+            pass
 
 
 # TODO: Add test for switch pak's.

@@ -17,5 +17,6 @@ EXTRACTED/
 # Generated python build files.
 *.egg-info
 build/*
+*.spec
 
 __pycache__/

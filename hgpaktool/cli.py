@@ -1,22 +1,27 @@
 import argparse
 import importlib.util
 import json
+import logging
 import os
 import os.path as op
+import pathlib
 import platform
 import sys
 import time
-from typing import Literal, Optional
+from typing import Literal
 
 import hgpaktool.constants
 from hgpaktool import __version__
-from hgpaktool.api import HGPAKFile
+from hgpaktool.api import HGPAKFile, InvalidFileException
 from hgpaktool.os_funcs import Platform, platform_map
 from hgpaktool.utils import make_filename_unixhidden, should_unpack
 
 # Try import both lz4 and zstd.
 # zstd is only required for windows, and lz4 is only required for mac, so if either fails, don't break
 # immediately, only break once we know what platform we are targeting.
+
+logger = logging.getLogger("hgpaktool")
+logger.addHandler(logging.StreamHandler())
 
 zstd_imported = False
 try:
@@ -36,12 +41,11 @@ except ModuleNotFoundError:
 class HGPAKNamespace(argparse.Namespace):
     plain: bool
     contents: bool
-    verbose: bool
     platform: Literal["windows", "mac", "switch"]
     compress: bool
-    output: str
+    output: os.PathLike[str]
     filter: list[str]
-    json: str
+    json: os.PathLike[str]
     dryrun: bool
     upper: bool
     unpack: bool
@@ -49,12 +53,34 @@ class HGPAKNamespace(argparse.Namespace):
     repack: bool
     filenames: list[str]
     list: bool
+    hash: os.PathLike[str]
+    no_hash_guid: bool
+    verbose: int
+
+
+def update_hashes(
+    pak: HGPAKFile,
+    hash_data: dict,
+    pakname: str,
+    args: HGPAKNamespace,
+):
+    pak_hash_data = {}
+    for ifname, _hash in pak.get_hashes(args.filter, args.no_hash_guid):
+        if args.upper:
+            pak_hash_data[ifname.upper()] = _hash
+        else:
+            pak_hash_data[ifname] = _hash
+    if pak_hash_data:
+        if args.plain:
+            hash_data.update(pak_hash_data)
+        else:
+            hash_data[op.basename(pakname)] = pak_hash_data
 
 
 def run():
     parser = argparse.ArgumentParser(
         prog=f"HGPAKtool ({__version__})",
-        description="A tool for handling HG's custom .pak format for mac and switch",
+        description="A tool for handling HG's custom .pak format",
     )
     parser.add_argument(
         "-L",
@@ -78,13 +104,6 @@ def run():
         help="Store the contents of a .pak in a file for recompression",
     )
     parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        default=False,
-        help="Log extra info when (un)packing archives",
-    )
-    parser.add_argument(
         "--platform",
         choices=("windows", "mac", "switch"),
         default=platform_map[platform.system()],
@@ -103,12 +122,17 @@ def run():
             "The directory to place extracted files in. If not provided, falls back to a folder called "
             "'EXTRACTED' in the current directory."
         ),
+        type=pathlib.Path,
     )
     parser.add_argument(
         "-f",
         "--filter",
         action="append",
-        help="A glob pattern which can be used to filter out the files which are to be extracted.",
+        help=(
+            "A glob pattern which can be used to filter out the files which are to be extracted.\n"
+            "This argument can be provided multiple times and the filters will be individually be applied to "
+            "full set of files in each pak (ie. filters are OR'd, not AND'd)."
+        ),
     )
     parser.add_argument(
         "-j",
@@ -120,6 +144,7 @@ def run():
             "If the pak paths are relative, then a 'filename' argument MUST be passed which is the root "
             "directory of the provided pak names."
         ),
+        type=pathlib.Path,
     )
     parser.add_argument(
         "--dryrun",
@@ -133,19 +158,30 @@ def run():
         default=False,
         help="If provided, extracted filenames will be converted to UPPERCASE.",
     )
+    parser.add_argument(
+        "--hash",
+        help="The name of a file to dump the hash details of the contained files",
+        type=pathlib.Path,
+        metavar="OUTPUT.JSON",
+    )
+    parser.add_argument(
+        "--no_hash_guid",
+        action="store_true",
+        default=False,
+        help="Whether or not to hash the GUID for mbin files",
+    )
+    parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase logging verbosity")
     pup_group = parser.add_mutually_exclusive_group()  # pup = pack/unpack
     pup_group.add_argument(
         "-U",
         "--unpack",
         action="store_true",
-        default=True,
         help="Unpack the files from the provided pak files.",
     )
     pup_group.add_argument(
         "-P",
         "--pack",
         action="store_true",
-        default=False,
         help="Pack the provided files into a pak file.",
     )
     pup_group.add_argument(
@@ -169,48 +205,72 @@ def run():
     args = HGPAKNamespace()
     args = parser.parse_args(namespace=args)
     filenames = args.filenames
-    if should_unpack(filenames):
-        # All the files provided are pak files, so decompress them unless we
-        # have been asked to repack them
-        if args.repack:
-            mode = "repack"
-        else:
-            mode = "unpack"
-    else:
+
+    generate_hashes = args.hash is not None
+    verbosity = args.verbose
+    if verbosity == 1:
+        logger.setLevel(logging.INFO)
+    elif verbosity >= 2:
+        logger.setLevel(logging.DEBUG)
+
+    if args.pack:
         mode = "pack"
+    elif args.unpack:
+        mode = "unpack"
+    else:
+        if generate_hashes:
+            mode = "hash"
+        else:
+            if should_unpack(filenames):
+                # All the files provided are pak files, so decompress them unless we
+                # have been asked to repack them
+                if args.repack:
+                    mode = "repack"
+                else:
+                    mode = "unpack"
+            else:
+                mode = "pack"
 
     if args.platform == Platform.WINDOWS:
         if zstd_imported is False:
-            print("You need to install zstandard for this code to work. Please run `pip install zstandard`")
+            logger.error(
+                "You need to install zstandard for this code to work. Please run `pip install zstandard`"
+            )
             sys.exit(1)
     elif args.platform == Platform.MAC:
         if lz4_imported is False:
-            print("You need to install lz4 for this code to work. Please run `pip install lz4`")
+            logger.error("You need to install lz4 for this code to work. Please run `pip install lz4`")
             sys.exit(1)
     elif args.platform == Platform.SWITCH:
         # Decompressed chunk size on switch is 128kb
         hgpaktool.constants.DECOMPRESSED_CHUNK_SIZE = 0x20000
         hgpaktool.constants.CLEAN_BYTES = b"\x00" * hgpaktool.constants.DECOMPRESSED_CHUNK_SIZE  # noqa
 
+    t1 = time.perf_counter()
+
     if mode == "unpack":
         output = op.abspath(args.output or "EXTRACTED")
         if not op.exists(output) and not args.list:
             os.makedirs(output, exist_ok=True)
-        t1 = time.time()
         pack_count = 0
         file_count = 0
         filename_data: dict[str, list[str]] = {}
 
-        json_file: Optional[str] = None
+        json_file = None
         if args.json:
             json_file = args.json
         elif len(filenames) == 1 and filenames[0].lower().endswith(".json"):
             json_file = filenames[0]
 
+        if generate_hashes:
+            hash_data = {}
+
         if json_file is not None:
             root_dir = None
             if len(filenames) > 1:
-                print("Cannot unpack with json from multiple directories. Please only provide one directory")
+                logger.error(
+                    "Cannot unpack with json from multiple directories. Please only provide one directory"
+                )
                 sys.exit(1)
             elif len(filenames) == 1:
                 if op.exists(filenames[0]) and op.isdir(filenames[0]):
@@ -224,41 +284,63 @@ def run():
                     if root_dir is not None:
                         abs_pak_path = op.join(root_dir, pak_path)
                     else:
-                        print(
+                        logger.error(
                             f"Cannot extract {pak_path} as it's a relative path. "
                             "Either provide the absolute path, or provide the root directory as the "
                             "'filename' argument."
                         )
                         continue
                 if not abs_pak_path.lower().endswith(".pak"):
-                    print(f"Skipping {pak_path}: Not a valid file to extract.")
+                    logger.debug(f"Skipping {pak_path}: Not a valid file to extract.")
                     continue
-                with HGPAKFile(abs_pak_path, args.platform) as pak:
-                    print(f"Reading {op.basename(abs_pak_path)}")
-                    file_count += pak.unpack(output, req_contents, args.upper)
-                pack_count += 1
+                try:
+                    logger.debug(f"Reading {op.basename(abs_pak_path)}")
+                    with HGPAKFile(abs_pak_path, args.platform) as pak:
+                        file_count += pak.unpack(output, req_contents, args.upper)
+                        if generate_hashes:
+                            update_hashes(pak, hash_data, abs_pak_path, args)
+                        pack_count += 1
+                except InvalidFileException:
+                    logger.debug(f"{abs_pak_path} is not a valid .pak file. Skipping")
         else:
             for filename in filenames:
                 if op.isdir(filename):
                     for fname in os.listdir(filename):
                         if not fname.lower().endswith(".pak"):
-                            print(f"{fname} is not a valid path to extract.")
+                            logger.debug(f"{fname} is not a valid path to extract.")
                             continue
-                        print(f"Reading {fname}")
-                        with HGPAKFile(op.join(filename, fname), args.platform) as pak:
-                            # Generate a list of the contained files
-                            fullpath = op.join(op.realpath(filename), fname)
-                            filename_data[fullpath] = pak.filenames
+                        try:
+                            logger.debug(f"Reading {fname}")
+                            with HGPAKFile(op.join(filename, fname), args.platform) as pak:
+                                if not args.list:
+                                    file_count += pak.unpack(output, args.filter)
+                                else:
+                                    # Generate a list of the contained files
+                                    fullpath = op.join(op.realpath(filename), fname)
+                                    fnames = list(pak._get_filtered_filelist(args.filter).keys())
+                                    if fnames:
+                                        filename_data[fullpath] = fnames
+                                if generate_hashes:
+                                    update_hashes(pak, hash_data, fname, args)
+                                pack_count += 1
+                        except InvalidFileException:
+                            logger.debug(f"{op.join(filename, fname)} is not a valid .pak file. Skipping")
+                else:
+                    try:
+                        logger.debug(f"Reading {filename}")
+                        with HGPAKFile(filename, args.platform) as pak:
                             if not args.list:
                                 file_count += pak.unpack(output, args.filter)
-                        pack_count += 1
-                else:
-                    with HGPAKFile(filename, args.platform) as pak:
-                        # Generate a list of the contained files
-                        filename_data[op.realpath(filename)] = pak.filenames
-                        if not args.list:
-                            file_count += pak.unpack(output, args.filter)
-                    pack_count += 1
+                            else:
+                                # Generate a list of the contained files
+                                fnames = list(pak._get_filtered_filelist(args.filter).keys())
+                                if fnames:
+                                    filename_data[op.realpath(filename)] = fnames
+                            if generate_hashes:
+                                update_hashes(pak, hash_data, filename, args)
+                            pack_count += 1
+                    except InvalidFileException:
+                        logger.debug(f"{filename} is not a valid .pak file. Skipping")
 
         if args.list:
             if args.plain:
@@ -270,10 +352,48 @@ def run():
             else:
                 with open("filenames.json", "w") as f:
                     f.write(json.dumps(filename_data, indent=2))
-            print(f"Listed contents of {pack_count} .pak's in {time.time() - t1:3f}s")
+            logger.info(f"Listed contents of {pack_count} .pak's in {time.perf_counter() - t1:.3f}s")
         elif args.contents:
             for pakname, filenames in filename_data.items():
                 with open(f"{make_filename_unixhidden(pakname)}.contents", "w") as f:
                     f.write(json.dumps({"filenames": filenames, "root_dir": output}))
         else:
-            print(f"Unpacked {file_count} files from {pack_count} .pak's in {time.time() - t1:3f}s")
+            logger.info(
+                f"Unpacked {file_count} files from {pack_count} .pak's in {time.perf_counter() - t1:.3f}s"
+            )
+    elif mode == "hash":
+        hash_data = {}
+        pak_count = 0
+        for filename in filenames:
+            if op.isdir(filename):
+                for fname in os.listdir(filename):
+                    if not fname.lower().endswith(".pak"):
+                        continue
+                    try:
+                        logger.debug(f"Reading {fname}")
+                        with HGPAKFile(op.join(filename, fname), args.platform) as pak:
+                            update_hashes(pak, hash_data, fname, args)
+                            pak_count += 1
+                    except InvalidFileException:
+                        logger.debug(f"{op.join(filename, fname)} is not a valid .pak file. Skipping")
+            else:
+                try:
+                    logger.debug(f"Reading {filename}")
+                    with HGPAKFile(filename, args.platform) as pak:
+                        update_hashes(pak, hash_data, filename, args)
+                        pak_count += 1
+                except InvalidFileException:
+                    logger.debug(f"{op.join(filename, fname)} is not a valid .pak file. Skipping")
+        if hash_data:
+            with open(args.hash, "w") as f:
+                json.dump(hash_data, f, indent=1)
+        logger.info(f"Hashed contents of {pak_count} .pak's in {time.perf_counter() - t1:.3f}s")
+    elif mode == "pack" or mode == "repack":
+        logger.error(
+            "packing and repacking currently not supported. This will return in the future. For now use an "
+            "older version of HGPAKTool for at least partially working (re)packing."
+        )
+
+
+if __name__ == "__main__":
+    run()
