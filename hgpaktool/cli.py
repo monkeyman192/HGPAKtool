@@ -13,7 +13,7 @@ from typing import Literal
 import hgpaktool.constants
 from hgpaktool import __version__
 from hgpaktool.api import HGPAKFile, InvalidFileException
-from hgpaktool.os_funcs import Platform, platform_map
+from hgpaktool.constants import Platform, platform_map
 from hgpaktool.utils import make_filename_unixhidden, should_unpack
 
 # Try import both lz4 and zstd.
@@ -36,6 +36,15 @@ try:
         lz4_imported = True
 except ModuleNotFoundError:
     pass
+
+
+class SmartFormatter(argparse.HelpFormatter):
+    # "Smaerter" help formatter c/o https://stackoverflow.com/a/22157136
+    def _split_lines(self, text, width):
+        if text.startswith("R|"):
+            return text[2:].splitlines()
+        # this is the RawTextHelpFormatter._split_lines
+        return argparse.HelpFormatter._split_lines(self, text, width)
 
 
 class HGPAKNamespace(argparse.Namespace):
@@ -81,6 +90,7 @@ def run():
     parser = argparse.ArgumentParser(
         prog=f"HGPAKtool ({__version__})",
         description="A tool for handling HG's custom .pak format",
+        formatter_class=SmartFormatter,
     )
     parser.add_argument(
         "-L",
@@ -105,11 +115,20 @@ def run():
     )
     parser.add_argument(
         "--platform",
-        choices=("windows", "mac", "switch"),
+        choices=("windows", "mac", "linux", "switch"),
         default=platform_map[platform.system()],
         const=platform_map[platform.system()],
         nargs="?",
-        help="The platform to unpack the files for. Default: %(default)s.",
+        help=(
+            "R|The platform to unpack the files for. Default: %(default)s.\n"
+            "Note: This changes the compression algorithm used to compress or decompress the files like so:\n"
+            " - windows -> ZSTD\n"
+            " - linux   -> ZSTD\n"
+            " - macos   -> LZ4\n"
+            " - switch  -> Oodle\n"
+            "This will default to the platform you are on, so if you wish to decompress a file from a "
+            "different platform or with a different compression algorithm, choose from the above list."
+        ),
     )
     parser.add_argument(
         "-Z", "--compress", action="store_true", help="Whether or not to compress the provided files."
@@ -129,7 +148,7 @@ def run():
         "--filter",
         action="append",
         help=(
-            "A glob pattern which can be used to filter out the files which are to be extracted.\n"
+            "R|A glob pattern which can be used to filter out the files which are to be extracted.\n"
             "This argument can be provided multiple times and the filters will be individually be applied to "
             "full set of files in each pak (ie. filters are OR'd, not AND'd)."
         ),
@@ -231,7 +250,7 @@ def run():
             else:
                 mode = "pack"
 
-    if args.platform == Platform.WINDOWS:
+    if args.platform == Platform.WINDOWS or args.platform == Platform.LINUX:
         if zstd_imported is False:
             logger.error(
                 "You need to install zstandard for this code to work. Please run `pip install zstandard`"

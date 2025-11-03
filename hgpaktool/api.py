@@ -7,10 +7,16 @@ from collections import namedtuple
 from functools import lru_cache
 from io import SEEK_CUR, SEEK_SET, BufferedReader, BufferedWriter, BytesIO
 from logging import NullHandler, getLogger
-from typing import Iterable, Literal, Mapping, NamedTuple, Optional, Union
+from typing import Iterable, Mapping, NamedTuple, Optional, Union
 
 from hgpaktool.compressors import Compressor
-from hgpaktool.constants import DECOMPRESSED_CHUNK_SIZE, Platform
+from hgpaktool.constants import (
+    DECOMPRESSED_CHUNK_SIZE,
+    Compression,
+    Platform,
+    PlatformLiteral,
+    compression_map,
+)
 from hgpaktool.utils import determine_bins, reqChunkBytes
 
 
@@ -139,9 +145,9 @@ class HGPAKFile:
     def __init__(
         self,
         filepath: Union[str, os.PathLike[str]],
-        platform: Union[Platform, Literal["windows", "mac", "switch"]] = Platform.WINDOWS,
+        platform: Union[Platform, PlatformLiteral] = Platform.WINDOWS,
     ):
-        self.compressor = Compressor(platform)
+        self.compressor = Compressor(compression_map.get(platform, Compression.ZSTD))
         self.fpath = filepath
 
         self.index: list[str] = []  # The list of files contained

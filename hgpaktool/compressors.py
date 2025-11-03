@@ -1,9 +1,9 @@
 import os.path as op
 import sys
 from logging import NullHandler, getLogger
-from typing import Literal, Optional, Union, cast
+from typing import Optional, Union, cast
 
-from hgpaktool.constants import Platform
+from hgpaktool.constants import Compression, CompressionLiteral
 from hgpaktool.oodle import OodleCompressor, OodleDecompressionError
 from hgpaktool.os_funcs import OSCONST
 
@@ -27,32 +27,31 @@ logger.addHandler(NullHandler())
 
 
 class Compressor:
-    def __init__(self, platform: Union[Platform, Literal["windows", "mac", "switch"]] = Platform.WINDOWS):
-        self.platform = platform
-        if self.platform == Platform.WINDOWS:
+    def __init__(self, compression: Union[Compression, CompressionLiteral] = Compression.ZSTD):
+        self.compression = compression
+        if self.compression == Compression.ZSTD:
             # TEMP fix for decompression. Won't work for compression.
             self.compressor = zstd.ZstdDecompressor()
             self.decompressed_chunk_size = 0x10000
             self._decompress_func = self._decompress_windows
-        elif self.platform == Platform.MAC:
+        elif self.compression == Compression.LZ4:
             self.compressor = lz4.block
             self.decompressed_chunk_size = 0x20000
             self._decompress_func = self._decompress_mac
         else:
-            # Switch and maybe other consoles?
             self.compressor = OodleCompressor(op.join(op.dirname(__file__), "lib", OSCONST.LIB_NAME))
             self.decompressed_chunk_size = 0x20000
             self._decompress_func = self._decompress_switch
 
     def compress(self, buffer: memoryview) -> bytes:
-        if self.platform == Platform.WINDOWS:
+        if self.compression == Compression.ZSTD:
             raise NotImplementedError("Recompression not supported on windows yet.")
             # self.compressor = zstd.ZstdCompressor()
             # return self.compressor.compress(
             #     buffer,
             #     store_size=False,
             # )
-        elif self.platform == Platform.MAC:
+        elif self.compression == Compression.LZ4:
             self.compressor = cast(lz4.block, self.compressor)
             return self.compressor.compress(
                 buffer,

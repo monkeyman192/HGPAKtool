@@ -1,25 +1,8 @@
 import os.path as op
 import urllib.request
-from collections import defaultdict
-from enum import Enum
 from platform import system as os_name
 
 OSNAMEMAP = {"Windows": "WIN", "Linux": "LNX", "Darwin": "MAC"}
-
-
-platform_map = defaultdict(
-    lambda: "windows",
-    {
-        "Windows": "windows",
-        "Darwin": "mac",
-    },
-)
-
-
-class Platform(Enum):
-    WINDOWS = "windows"
-    MAC = "mac"
-    SWITCH = "switch"
 
 
 class OSConstMap:

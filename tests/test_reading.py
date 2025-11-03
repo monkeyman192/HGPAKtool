@@ -15,6 +15,7 @@ DATA_DIR = op.join(op.dirname(__file__), "data")
 # TODO: Add switch?
 plat_map = {
     "windows": "pc",
+    "linux": "pc",
     "mac": "macos",
 }
 
@@ -27,8 +28,8 @@ def get_files(fpath: os.PathLike) -> list[str]:
     return file_list
 
 
-@pytest.mark.parametrize("platform", ("windows", "mac"))
-def test_read(tmp_path: Path, platform: Literal["windows", "mac"]):
+@pytest.mark.parametrize("platform", ("windows", "mac", "linux"))
+def test_read(tmp_path: Path, platform: Literal["windows", "mac", "linux"]):
     with HGPAKFile(op.join(DATA_DIR, f"NMSARC.MeshPlanetSKY.{platform}.pak"), platform) as pak:
         assert len(pak.filenames) == 6
         # Extract the files to a temporary directory and analyse it
@@ -46,8 +47,8 @@ def test_read(tmp_path: Path, platform: Literal["windows", "mac"]):
             assert str(final_path).upper() == str(final_path)
 
 
-@pytest.mark.parametrize("platform", ("windows", "mac"))
-def test_filtered_extraction(platform: Literal["windows", "mac"]):
+@pytest.mark.parametrize("platform", ("windows", "mac", "linux"))
+def test_filtered_extraction(platform: Literal["windows", "mac", "linux"]):
     with HGPAKFile(op.join(DATA_DIR, f"NMSARC.MeshPlanetSKY.{platform}.pak"), platform) as pak:
         assert len([x for x in pak.extract("*rainbowplane*")]) == 2
         assert len([x for x in pak.extract("*RAINBOWPLANE*")]) == 2
