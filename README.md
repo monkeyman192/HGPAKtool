@@ -5,7 +5,7 @@ Note that this tool only works on .pak files after the NMS 5.50 (Worlds Part II)
 
 ## Installation
 
-HGPAKTool can be installed in one of two ways:
+HGPAKtool can be installed in one of two ways:
 
 ### Precompiled binary
 
