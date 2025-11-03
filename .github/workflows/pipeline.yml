@@ -159,8 +159,9 @@ jobs:
         run: |
           cd bin
           gzip -9 hgpaktool
-          mv hgpaktool.gz hgpaktool-x86_64-unknown-linux.gz
+          mv hgpaktool.gz ../hgpaktool-x86_64-unknown-linux.gz
           zip hgpaktool-x86_64-pc-windows.zip hgpaktool.exe
+          mv hgpaktool-x86_64-pc-windows.zip ../hgpaktool-x86_64-pc-windows.zip
       - name: Publish binaries to github release
         uses: softprops/action-gh-release@v2
         with:
