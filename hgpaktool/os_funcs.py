@@ -1,24 +1,24 @@
-# import lzma
 import os.path as op
-from platform import system as os_name
 import urllib.request
+from platform import system as os_name
+
+OSNAMEMAP = {"Windows": "WIN", "Linux": "LNX", "Darwin": "MAC"}
 
 
-OSNAMEMAP = {'Windows': 'WIN',
-             'Linux': 'LNX',
-             'Darwin': 'MAC'}
+class OSConstMap:
+    LIB_NAME: str
+    LIB_URL: str
 
-
-class OSConstMap():
     """ Class which provides values of constants in an OS-dependent manner """
+
     def __init__(self):
-        self.os = OSNAMEMAP.get(os_name(), 'WIN')
+        self.os = OSNAMEMAP.get(os_name(), "WIN")
 
     def __setattr__(self, name, value):
         self.__dict__[name] = value
 
     def __getattr__(self, name):
-        """ Retreive the required value
+        """Retreive the required value
 
         Names will be suffixed by '_<OS>', so we want to just get the os
         dependent version
@@ -31,7 +31,7 @@ class OSConstMap():
         name : str
             Name of the variable without an OS identifier
         """
-        os_dep_name = name + '_' + self.os
+        os_dep_name = name + "_" + self.os
         return self.__dict__[os_dep_name]
 
 
@@ -48,7 +48,7 @@ OSCONST.LIB_NAME_MAC = "liboo2coremac64.2.9.8.dylib"
 
 
 def download_dll(out_dir: str = ""):
-    """ Simple script to download the Oodle binary. """
+    """Simple script to download the Oodle binary."""
     with urllib.request.urlopen(OSCONST.LIB_URL) as f:
         print(f"Downloading Oodle from {OSCONST.LIB_URL}")
         data = f.read()

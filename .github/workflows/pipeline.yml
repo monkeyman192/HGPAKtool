@@ -1,0 +1,187 @@
+name: HGPAKTool
+
+on:
+  # Run on all branches except for the gh-pages branch
+  push:
+    paths-ignore:
+      - '*.md'
+    branches-ignore:
+      - 'gh-pages'
+    tags:
+      - '*'
+  pull_request:
+    paths-ignore:
+      - '*.md'
+    branches-ignore:
+      - 'gh-pages'
+
+jobs:
+  lint_testing:
+    name: Lint and test code
+    runs-on: ${{ matrix.os.name }}
+    strategy:
+      matrix:
+        py_ver: [
+          {version: '3.9'},
+          {version: '3.10'},
+          {version: '3.11'},
+          {version: '3.12'},
+          {version: '3.13'},
+          {version: '3.14'},
+        ]
+        os: [
+          # {name: 'Ubuntu-latest'},
+          {name: 'Windows-2025'},
+        ]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Python ${{ matrix.py_ver.version}}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "${{ matrix.py_ver.version}}"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip uv
+          uv sync --frozen --all-groups --all-extras
+      - name: Lint and format code
+        run: |
+          uv run ruff check ./hgpaktool ./tests
+          uv run ruff format --check ./hgpaktool ./tests
+      - name: Run unit tests
+        run: uv run pytest ./tests
+  build_wheel:
+    name: Build wheel
+    runs-on: Windows-2025
+    needs:
+      - lint_testing
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip uv
+          uv sync --frozen --all-groups --all-extras
+      - name: Build Python wheel
+        run: uv build
+      - name: Check built artefacts
+        run: uv run python -m twine check ./dist/*
+      - name: Upload Wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+  build_binaries:
+    name: Build binaries
+    runs-on: ${{ matrix.os.name }}
+    strategy:
+      matrix:
+        os: [
+          {name: 'Ubuntu-latest'},
+          {name: 'Windows-2025'},
+        ]
+    needs:
+      - lint_testing
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip uv
+          uv sync --frozen --extra builder
+      - name: Build HGPAKTool windows binary
+        if: matrix.os.name == 'Windows-2025'
+        run: uv run pyinstaller hgpaktool/cli.py --onefile --icon .\discovery3.ico --name hgpaktool
+      - name: Build HGPAKTool linux binary
+        if: matrix.os.name == 'Ubuntu-latest'
+        run: uv run pyinstaller hgpaktool/cli.py --onefile --name hgpaktool
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.os.name }}
+          path: dist/
+
+  release:
+    name: Release HGPAKTool wheels and source build to PyPI
+    # Only run this job if the commit was tagged.
+    if: startsWith(github.ref, 'refs/tags')
+    needs:
+      - build_wheel
+      - build_binaries
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/HGPAKTool
+    permissions:
+      id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
+    steps:
+      - name: Download wheel for release
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+      - name: Download binaries for release
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          path: bin/
+      - name: Move files ready for release
+        run: |
+          mv bin/binary-Ubuntu-latest/hgpaktool bin/hgpaktool
+          chmod u=rwx,g=rx,o=rx bin/hgpaktool
+          mv bin/binary-Windows-2025/hgpaktool.exe bin/hgpaktool.exe
+      - name: Compress binaries
+        run: |
+          cd bin
+          gzip -9 hgpaktool
+          mv hgpaktool.gz hgpaktool-x86_64-unknown-linux.gz
+          zip hgpaktool-x86_64-pc-windows.zip hgpaktool.exe
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true
+      - name: Publish binaries to github release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "${{ github.ref_name }}"
+          tag_name: ${{ github.ref_name }}
+          files: |
+            bin/hgpaktool.exe
+            bin/hgpaktool
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  test-release:
+    name: Release HGPAKTool wheels and source build to test-PyPI
+    # Release to the test PyPI if we have merged into master or if we have tagged.
+    if: ${{ (github.ref == 'refs/heads/master') || startsWith(github.ref, 'refs/tags') }}
+    needs:
+      - build_wheel
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/HGPAKTool
+    permissions:
+      id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
+    steps:
+      - name: Download files for release
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          attestations: true

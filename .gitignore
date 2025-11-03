@@ -1,5 +1,6 @@
 # pak files (for testing)
 *.pak
+!tests/data/*.pak
 filenames.json
 *.bak
 *.contents
@@ -12,5 +13,10 @@ EXTRACTED/
 *.dylib
 *.so
 *.exe
+
+# Generated python build files.
+*.egg-info
+build/*
+*.spec
 
 __pycache__/
