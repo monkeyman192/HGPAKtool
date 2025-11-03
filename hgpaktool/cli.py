@@ -410,7 +410,7 @@ def run():
     elif mode == "pack" or mode == "repack":
         logger.error(
             "packing and repacking currently not supported. This will return in the future. For now use an "
-            "older version of HGPAKTool for at least partially working (re)packing."
+            "older version of HGPAKtool for at least partially working (re)packing."
         )
 
 

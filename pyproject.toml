@@ -68,8 +68,8 @@ preview = true
 convention = "numpy"
 
 [project.urls]
-homepage = "https://github.com/monkeyman192/HGPAKTool"
-repository = "https://github.com/monkeyman192/HGPAKTool.git"
+homepage = "https://github.com/monkeyman192/HGPAKtool"
+repository = "https://github.com/monkeyman192/HGPAKtool.git"
 
 [build-system]
 requires = ["setuptools>=64", "wheel", "setuptools-scm>=8", "setuptools_scm_git_semver"]
