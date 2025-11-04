@@ -51,11 +51,14 @@ jobs:
           uv run ruff format --check ./hgpaktool ./tests
       - name: Run unit tests
         run: uv run pytest ./tests
+
   build_wheel:
     name: Build wheel
     runs-on: Windows-2025
     needs:
       - lint_testing
+    outputs:
+      cli_version: ${{ steps.cli_version.outputs.CLI_VERSION }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -77,6 +80,11 @@ jobs:
         with:
           name: python-package-distributions
           path: dist/
+      - name: Determine CLI version
+        id: cli_version
+        run: echo "CLI_VERSION=$(uv run python -c 'from hgpaktool.cli import CLI_VERSION; print(CLI_VERSION)')" >> $GITHUB_OUTPUT
+        shell: bash
+
   build_binaries:
     name: Build binaries
     runs-on: ${{ matrix.os.name }}
@@ -112,34 +120,35 @@ jobs:
           name: binary-${{ matrix.os.name }}
           path: dist/
 
-  # release:
-  #   name: Release HGPAKtool wheels and source build to PyPI
-  #   # Only run this job if the commit was tagged.
-  #   if: startsWith(github.ref, 'refs/tags')
-  #   needs:
-  #     - build_wheel
-  #     - build_binaries
-  #   runs-on: ubuntu-latest
-  #   environment:
-  #     name: pypi
-  #     url: https://pypi.org/p/HGPAKtool
-  #   permissions:
-  #     id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
-  #   steps:
-  #     - name: Download wheel for release
-  #       uses: actions/download-artifact@v4
-  #       with:
-  #         name: python-package-distributions
-  #         path: dist/
-  #     - name: Publish package distributions to PyPI
-  #       uses: pypa/gh-action-pypi-publish@release/v1
-  #       with:
-  #         attestations: true
+  release:
+    name: Release HGPAKtool wheels and source build to PyPI
+    # Only run this job if the commit was tagged.
+    if: startsWith(github.ref, 'refs/tags')
+    needs:
+      - build_wheel
+      - build_binaries
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/HGPAKtool
+    permissions:
+      id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
+    steps:
+      - name: Download wheel for release
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true
 
   binary-release:
     name: Publish compiled binaries to GitHub releases
-    # Only run this job if the commit was tagged.
-    if: startsWith(github.ref, 'refs/tags')
+    # Only run this job if the commit was tagged or if we explicitly need to bump the cli version and it's been merged into master.
+    # TODO: Could detect existing released version and release if this is different... Probably not worth it...
+    if: ${{ startsWith(github.ref, 'refs/tags') || (startsWith(github.event.head_commit.message, '[bump-cli]') && (github.ref == 'refs/heads/master'))}}
     needs:
       - build_wheel
       - build_binaries
@@ -162,8 +171,9 @@ jobs:
           mv hgpaktool.gz ../hgpaktool-x86_64-unknown-linux.gz
           zip hgpaktool-x86_64-pc-windows.zip hgpaktool.exe
           mv hgpaktool-x86_64-pc-windows.zip ../hgpaktool-x86_64-pc-windows.zip
-      - name: Publish binaries to github release
+      - name: Publish tagged binaries to github release
         uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags')
         with:
           name: "${{ github.ref_name }}"
           tag_name: ${{ github.ref_name }}
@@ -172,27 +182,40 @@ jobs:
             hgpaktool-x86_64-pc-windows.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish cli bumped binaries to github release
+        env:
+          CLI_VERSION: ${{needs.build_wheel.outputs.cli_version}}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.event.head_commit.message, '[bump-cli]')
+        with:
+          # In this case we need to get the CLI revision and add this to the version on github
+          name: "${{ env.CLI_VERSION }}"
+          tag_name: ${{ env.CLI_VERSION }}
+          files: |
+            hgpaktool-x86_64-unknown-linux.gz
+            hgpaktool-x86_64-pc-windows.zip
 
-  # test-release:
-  #   name: Release HGPAKtool wheels and source build to test-PyPI
-  #   # Release to the test PyPI if we have merged into master or if we have tagged.
-  #   if: ${{ (github.ref == 'refs/heads/master') || startsWith(github.ref, 'refs/tags') }}
-  #   needs:
-  #     - build_wheel
-  #   runs-on: ubuntu-latest
-  #   environment:
-  #     name: testpypi
-  #     url: https://test.pypi.org/p/HGPAKtool
-  #   permissions:
-  #     id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
-  #   steps:
-  #     - name: Download files for release
-  #       uses: actions/download-artifact@v4
-  #       with:
-  #         name: python-package-distributions
-  #         path: dist/
-  #     - name: Publish package distributions to PyPI
-  #       uses: pypa/gh-action-pypi-publish@release/v1
-  #       with:
-  #         repository-url: https://test.pypi.org/legacy/
-  #         attestations: true
+  test-release:
+    name: Release HGPAKtool wheels and source build to test-PyPI
+    # Release to the test PyPI if we have merged into master or if we have tagged.
+    if: ${{ (github.ref == 'refs/heads/master') || startsWith(github.ref, 'refs/tags') }}
+    needs:
+      - build_wheel
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/HGPAKtool
+    permissions:
+      id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
+    steps:
+      - name: Download files for release
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          attestations: true
