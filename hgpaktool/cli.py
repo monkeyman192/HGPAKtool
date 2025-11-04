@@ -6,6 +6,7 @@ import os
 import os.path as op
 import pathlib
 import platform
+import re
 import sys
 import time
 from typing import Literal
@@ -36,6 +37,32 @@ try:
         lz4_imported = True
 except ModuleNotFoundError:
     pass
+
+VERSION_RE = re.compile(
+    r"""
+    (?P<version>
+        (?P<major_ver>\d+)
+        \.
+        (?P<minor_ver>\d+)
+        \.
+        (?P<patch_ver>\d+)
+        \.dev(?P<revision>\d+)
+    )
+    |
+    (^\d+\.\d+\.\d+$)
+    """,
+    re.VERBOSE,
+)
+
+# IMPORTANT: This value MUST be reset to 0 when a new version is tagged.
+CLI_REVISION = 1
+CLI_VERSION = __version__
+if (m := re.match(VERSION_RE, __version__)) is not None:
+    md = m.groupdict()
+    if md["version"] is not None:
+        # We are some way away from the original version. Decrement patch and use above CLI_REVISION value.
+        prev_patch_ver = max(int(md["patch_ver"]) - 1, 0)
+        CLI_VERSION = f"{md['major_ver']}.{md['minor_ver']}.{prev_patch_ver}.cli{CLI_REVISION}"
 
 
 class SmartFormatter(argparse.HelpFormatter):
@@ -88,7 +115,7 @@ def update_hashes(
 
 def run():
     parser = argparse.ArgumentParser(
-        prog=f"HGPAKtool ({__version__})",
+        prog=f"HGPAKtool ({CLI_VERSION})",
         description="A tool for handling HG's custom .pak format",
         formatter_class=SmartFormatter,
     )
@@ -332,7 +359,7 @@ def run():
                             logger.debug(f"Reading {fname}")
                             with HGPAKFile(op.join(filename, fname), args.platform) as pak:
                                 if not args.list:
-                                    file_count += pak.unpack(output, args.filter)
+                                    file_count += pak.unpack(output, args.filter, args.upper)
                                 else:
                                     # Generate a list of the contained files
                                     fullpath = op.join(op.realpath(filename), fname)
@@ -349,7 +376,7 @@ def run():
                         logger.debug(f"Reading {filename}")
                         with HGPAKFile(filename, args.platform) as pak:
                             if not args.list:
-                                file_count += pak.unpack(output, args.filter)
+                                file_count += pak.unpack(output, args.filter, args.upper)
                             else:
                                 # Generate a list of the contained files
                                 fnames = list(pak._get_filtered_filelist(args.filter).keys())
@@ -367,10 +394,20 @@ def run():
                     for pakname, filenames in filename_data.items():
                         f.write(f"Listing {pakname}\n")
                         for fname in filenames:
-                            f.write(fname + "\n")
+                            if args.upper:
+                                f.write(fname.upper() + "\n")
+                            else:
+                                f.write(fname + "\n")
             else:
                 with open("filenames.json", "w") as f:
-                    f.write(json.dumps(filename_data, indent=2))
+                    if args.upper:
+                        # Recase all the internal filenames
+                        data = {}
+                        for pakname, filenames in filename_data.items():
+                            data[pakname] = [x.upper() for x in filenames]
+                        f.write(json.dumps(data, indent=2))
+                    else:
+                        f.write(json.dumps(filename_data, indent=2))
             logger.info(f"Listed contents of {pack_count} .pak's in {time.perf_counter() - t1:.3f}s")
         elif args.contents:
             for pakname, filenames in filename_data.items():
@@ -409,7 +446,7 @@ def run():
         logger.info(f"Hashed contents of {pak_count} .pak's in {time.perf_counter() - t1:.3f}s")
     elif mode == "pack" or mode == "repack":
         logger.error(
-            "packing and repacking currently not supported. This will return in the future. For now use an "
+            "Packing and repacking currently not supported. This will return in the future. For now use an "
             "older version of HGPAKtool for at least partially working (re)packing."
         )
 
