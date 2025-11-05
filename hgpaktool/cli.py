@@ -6,7 +6,6 @@ import os
 import os.path as op
 import pathlib
 import platform
-import re
 import sys
 import time
 from typing import Literal
@@ -37,32 +36,6 @@ try:
         lz4_imported = True
 except ModuleNotFoundError:
     pass
-
-VERSION_RE = re.compile(
-    r"""
-    (?P<version>
-        (?P<major_ver>\d+)
-        \.
-        (?P<minor_ver>\d+)
-        \.
-        (?P<patch_ver>\d+)
-        \.dev(?P<revision>\d+)
-    )
-    |
-    (^\d+\.\d+\.\d+$)
-    """,
-    re.VERBOSE,
-)
-
-# IMPORTANT: This value MUST be reset to 0 when a new version is tagged.
-CLI_REVISION = 1
-CLI_VERSION = __version__
-if (m := re.match(VERSION_RE, __version__)) is not None:
-    md = m.groupdict()
-    if md["version"] is not None:
-        # We are some way away from the original version. Decrement patch and use above CLI_REVISION value.
-        prev_patch_ver = max(int(md["patch_ver"]) - 1, 0)
-        CLI_VERSION = f"{md['major_ver']}.{md['minor_ver']}.{prev_patch_ver}.cli{CLI_REVISION}"
 
 
 class SmartFormatter(argparse.HelpFormatter):
@@ -115,7 +88,7 @@ def update_hashes(
 
 def run():
     parser = argparse.ArgumentParser(
-        prog=f"HGPAKtool ({CLI_VERSION})",
+        prog=f"HGPAKtool ({__version__})",
         description="A tool for handling HG's custom .pak format",
         formatter_class=SmartFormatter,
     )
