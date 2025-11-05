@@ -77,7 +77,7 @@ class SmartFormatter(argparse.HelpFormatter):
 class HGPAKNamespace(argparse.Namespace):
     plain: bool
     contents: bool
-    platform: Literal["windows", "mac", "switch"]
+    platform: Literal["windows", "mac", "switch", "linux"]
     compress: bool
     output: os.PathLike[str]
     filter: list[str]
