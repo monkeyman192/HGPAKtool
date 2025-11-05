@@ -20,7 +20,7 @@ If you wish to use HGPAKtool from code, the wheel is published on [pypi](https:/
 
 Install by running `python -m pip install hgpaktool`.
 
-If you would like to support the json5 format, there is an optional dependency which can be included:
+If you would like to support the [json5](https://json5.org/) format, there is an optional dependency which can be included:
 
 `python -m pip install hgpaktool[json5]`
 
