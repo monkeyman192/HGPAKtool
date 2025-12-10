@@ -14,7 +14,7 @@ import hgpaktool.constants
 from hgpaktool import __version__
 from hgpaktool.api import HGPAKFile, InvalidFileException
 from hgpaktool.constants import Platform, platform_map
-from hgpaktool.utils import make_filename_unixhidden, should_unpack
+from hgpaktool.utils import should_unpack
 
 # Try import both lz4 and zstd.
 # zstd is only required for windows, and lz4 is only required for mac, so if either fails, don't break
@@ -49,7 +49,7 @@ class SmartFormatter(argparse.HelpFormatter):
 
 class HGPAKNamespace(argparse.Namespace):
     plain: bool
-    contents: bool
+    manifest: bool
     platform: Literal["windows", "mac", "switch", "linux"]
     compress: bool
     output: os.PathLike[str]
@@ -58,12 +58,12 @@ class HGPAKNamespace(argparse.Namespace):
     dryrun: bool
     upper: bool
     unpack: bool
-    pack: bool
-    repack: bool
+    repack: os.PathLike[str]
     filenames: list[str]
     list: bool
     hash: os.PathLike[str]
     no_hash_guid: bool
+    quiet: bool
     verbose: int
 
 
@@ -107,11 +107,11 @@ def run():
         help=("Whether to output any generation informational files in a simplified format"),
     )
     parser.add_argument(
-        "-C",
-        "--contents",
+        "-M",
+        "--manifest",
         action="store_true",
         default=False,
-        help="Store the contents of a .pak in a file for recompression",
+        help="Write the .manifest file when unpacking the .pak file. This is required for recompression.",
     )
     parser.add_argument(
         "--platform",
@@ -189,7 +189,17 @@ def run():
         default=False,
         help="Whether or not to hash the GUID for mbin files",
     )
-    parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase logging verbosity")
+
+    logging_group = parser.add_mutually_exclusive_group()
+    logging_group.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help="Increase logging verbosity",
+    )
+    logging_group.add_argument("-q", "--quiet", action="store_true", help="Only log warnings and errors")
+
     pup_group = parser.add_mutually_exclusive_group()  # pup = pack/unpack
     pup_group.add_argument(
         "-U",
@@ -198,18 +208,12 @@ def run():
         help="Unpack the files from the provided pak files.",
     )
     pup_group.add_argument(
-        "-P",
-        "--pack",
-        action="store_true",
-        help="Pack the provided files into a pak file.",
-    )
-    pup_group.add_argument(
         "-R",
         "--repack",
         action="store_true",
-        default=False,
-        help="Repack the files for a given vanilla pak name.",
+        help="Repackthe specified manifest file.",
     )
+
     parser.add_argument(
         "filenames",
         nargs="+",
@@ -226,29 +230,29 @@ def run():
     filenames = args.filenames
 
     generate_hashes = args.hash is not None
-    verbosity = args.verbose
-    if verbosity == 1:
-        logger.setLevel(logging.INFO)
-    elif verbosity >= 2:
-        logger.setLevel(logging.DEBUG)
 
-    if args.pack:
-        mode = "pack"
+    # Handle logging level based on verbosity and quiet flags
+    logger.setLevel(logging.INFO)
+    if args.quiet:
+        logger.setLevel(logging.ERROR)
+    else:
+        verbosity = args.verbose
+        if verbosity >= 1:
+            logger.setLevel(logging.DEBUG)
+
+    if args.repack:
+        mode = "repack"
     elif args.unpack:
         mode = "unpack"
     else:
         if generate_hashes:
             mode = "hash"
+        elif should_unpack(filenames):
+            # All the files provided are pak files, so decompress them unless we
+            # have been asked to repack them
+            mode = "unpack"
         else:
-            if should_unpack(filenames):
-                # All the files provided are pak files, so decompress them unless we
-                # have been asked to repack them
-                if args.repack:
-                    mode = "repack"
-                else:
-                    mode = "unpack"
-            else:
-                mode = "pack"
+            mode = "repack"
 
     if args.platform == Platform.WINDOWS or args.platform == Platform.LINUX:
         if zstd_imported is False:
@@ -315,7 +319,12 @@ def run():
                 try:
                     logger.debug(f"Reading {op.basename(abs_pak_path)}")
                     with HGPAKFile(abs_pak_path, args.platform) as pak:
-                        file_count += pak.unpack(output, req_contents, args.upper)
+                        file_count += pak.unpack(
+                            output,
+                            req_contents,
+                            args.upper,
+                            write_manifest=args.manifest,
+                        )
                         if generate_hashes:
                             update_hashes(pak, hash_data, abs_pak_path, args)
                         pack_count += 1
@@ -332,7 +341,12 @@ def run():
                             logger.debug(f"Reading {fname}")
                             with HGPAKFile(op.join(filename, fname), args.platform) as pak:
                                 if not args.list:
-                                    file_count += pak.unpack(output, args.filter, args.upper)
+                                    file_count += pak.unpack(
+                                        output,
+                                        args.filter,
+                                        args.upper,
+                                        write_manifest=args.manifest,
+                                    )
                                 else:
                                     # Generate a list of the contained files
                                     fullpath = op.join(op.realpath(filename), fname)
@@ -349,7 +363,12 @@ def run():
                         logger.debug(f"Reading {filename}")
                         with HGPAKFile(filename, args.platform) as pak:
                             if not args.list:
-                                file_count += pak.unpack(output, args.filter, args.upper)
+                                file_count += pak.unpack(
+                                    output,
+                                    args.filter,
+                                    args.upper,
+                                    write_manifest=args.manifest,
+                                )
                             else:
                                 # Generate a list of the contained files
                                 fnames = list(pak._get_filtered_filelist(args.filter).keys())
@@ -382,10 +401,6 @@ def run():
                     else:
                         f.write(json.dumps(filename_data, indent=2))
             logger.info(f"Listed contents of {pack_count} .pak's in {time.perf_counter() - t1:.3f}s")
-        elif args.contents:
-            for pakname, filenames in filename_data.items():
-                with open(f"{make_filename_unixhidden(pakname)}.contents", "w") as f:
-                    f.write(json.dumps({"filenames": filenames, "root_dir": output}))
         else:
             logger.info(
                 f"Unpacked {file_count} files from {pack_count} .pak's in {time.perf_counter() - t1:.3f}s"
@@ -417,11 +432,19 @@ def run():
             with open(args.hash, "w") as f:
                 json.dump(hash_data, f, indent=1)
         logger.info(f"Hashed contents of {pak_count} .pak's in {time.perf_counter() - t1:.3f}s")
-    elif mode == "pack" or mode == "repack":
-        logger.error(
-            "Packing and repacking currently not supported. This will return in the future. For now use an "
-            "older version of HGPAKtool for at least partially working (re)packing."
-        )
+    elif mode == "repack":
+        if args.output:
+            output = op.abspath(args.output)
+            if op.isfile(output):
+                logger.error(
+                    "Provided output path is not a directory. Please provide a directory to repack files to."
+                )
+                sys.exit(1)
+        else:
+            output = None
+        for i, fname in enumerate(filenames):
+            HGPAKFile.repack(fname, output, args.compress, args.platform)
+        logger.info(f"Repacked {i + 1} .pak's in {time.perf_counter() - t1:.3f}s")
 
 
 if __name__ == "__main__":

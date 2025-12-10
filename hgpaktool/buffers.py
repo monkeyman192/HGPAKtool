@@ -1,5 +1,5 @@
-from io import BytesIO
-from typing import Iterator, Optional
+from io import BufferedWriter, BytesIO
+from typing import Iterator
 
 from hgpaktool.compressors import Compressor
 from hgpaktool.constants import CLEAN_BYTES, DECOMPRESSED_CHUNK_SIZE
@@ -22,8 +22,12 @@ def chunked_file_reader(fpaths: list[str]) -> Iterator[bytes]:
 
 
 class FixedBuffer(BytesIO):
-    def __init__(self, main_buffer: BytesIO, compress: bool = False, compressor: Optional[Compressor] = None):
-        # NOTE: compressor can't ever actually be None. I need to clean this up.
+    def __init__(
+        self,
+        main_buffer: BufferedWriter,
+        compressor: Compressor,
+        compress: bool = False,
+    ):
         super().__init__(CLEAN_BYTES)
         # The number of bytes remaining until we have a full buffer
         self.remaining_bytes = DECOMPRESSED_CHUNK_SIZE
@@ -57,7 +61,7 @@ class FixedBuffer(BytesIO):
     def write_to_main_buffer(self):
         """Write the data in the current buffer into the main buffer."""
         buffer = self.getbuffer()
-        if self.compress and self.compressor:
+        if self.compress:
             compressed_bytes = self.compressor.compress(buffer)
             compressed_size = len(compressed_bytes)
             if compressed_size >= DECOMPRESSED_CHUNK_SIZE:

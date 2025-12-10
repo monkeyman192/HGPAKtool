@@ -1,4 +1,8 @@
+import hashlib
+import os
 import os.path as op
+import pathlib
+from typing import Union
 
 
 def determine_bins(num_bytes: int, bin_size: int = 0x10) -> int:
@@ -26,22 +30,6 @@ def padding(x: int) -> int:
     return (0x10 - (x & 0xF)) & 0xF
 
 
-def make_filename_unixhidden(path: str) -> str:
-    """Add a dot at the beginning of a filename, respecting its path
-
-    Parameters
-    ----------
-    path:
-        The absolute or relative file path.
-
-    Returns
-    -------
-    The hidden filename version.
-    """
-
-    return op.join(op.dirname(path), "." + op.basename(path))
-
-
 def should_unpack(filenames: list[str]) -> bool:
     """Determine whether we should unpack or not.
     This will return true if every file in the list has the extension .pak or we get a folder.
@@ -51,3 +39,24 @@ def should_unpack(filenames: list[str]) -> bool:
         or (len(filenames) == 1 and op.isdir(filenames[0]))
         or (len(filenames) == 1 and filenames[0].lower().endswith(".json"))
     )
+
+
+def hash_path(path: str) -> bytes:
+    # This is the hash of the filename as per how the game generates them.
+    return hashlib.md5(normalise_path(path).encode()).digest()
+
+
+def normalise_path(path: str) -> str:
+    return pathlib.PureWindowsPath(path).as_posix().lower()
+
+
+def parse_manifest(manifest: Union[str, os.PathLike[str]]) -> list[str]:
+    """Parse the manifest file and extract the list of files contained."""
+    fnames = []
+    with open(manifest, "r") as f:
+        for line in f:
+            sline = line.strip()
+            if not sline:
+                continue
+            fnames.append(normalise_path(sline))
+    return fnames

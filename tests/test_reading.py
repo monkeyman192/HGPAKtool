@@ -8,6 +8,7 @@ import pytest
 
 from hgpaktool import HGPAKFile
 from hgpaktool.api import InvalidFileException
+from hgpaktool.utils import normalise_path, parse_manifest
 
 DATA_DIR = op.join(op.dirname(__file__), "data")
 
@@ -29,7 +30,7 @@ def get_files(fpath: os.PathLike) -> list[str]:
 
 
 @pytest.mark.parametrize("platform", ("windows", "mac", "linux"))
-def test_read(tmp_path: Path, platform: Literal["windows", "mac", "linux"]):
+def test_unpack(tmp_path: Path, platform: Literal["windows", "mac", "linux"]):
     with HGPAKFile(op.join(DATA_DIR, f"NMSARC.MeshPlanetSKY.{platform}.pak"), platform) as pak:
         assert len(pak.filenames) == 6
         # Extract the files to a temporary directory and analyse it
@@ -45,6 +46,33 @@ def test_read(tmp_path: Path, platform: Literal["windows", "mac", "linux"]):
             assert fpath.startswith(str(tmp_path))
             final_path = Path(fpath).relative_to(tmp_path)
             assert str(final_path).upper() == str(final_path)
+
+
+@pytest.mark.parametrize("platform", ("windows", "mac", "linux"))
+def test_unpack_with_manifest(tmp_path: Path, platform: Literal["windows", "mac", "linux"]):
+    with HGPAKFile(op.join(DATA_DIR, f"NMSARC.MeshPlanetSKY.{platform}.pak"), platform) as pak:
+        assert len(pak.filenames) == 6
+        # Extract the files to a temporary directory and analyse it
+        pak.unpack(tmp_path, write_manifest=True)
+        files = get_files(tmp_path)
+        assert len(files) == 7
+        # Find the manifest file
+        manifest_fpath = None
+        for fpath in files:
+            if fpath.endswith(".manifest"):
+                manifest_fpath = fpath
+        assert manifest_fpath is not None
+        assert op.exists(manifest_fpath)
+
+        manifest_contents = parse_manifest(manifest_fpath)
+        # Remove the base path and normalise the paths of the real files and check that they match the
+        # manifest
+        norm_paths = []
+        for fpath in files:
+            if fpath != manifest_fpath:
+                norm_paths.append(normalise_path(op.relpath(fpath, tmp_path)))
+        assert len(norm_paths) == 6
+        assert set(norm_paths) == set(manifest_contents)
 
 
 @pytest.mark.parametrize("platform", ("windows", "mac", "linux"))
