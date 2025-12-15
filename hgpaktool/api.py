@@ -4,11 +4,13 @@ import os
 import os.path as op
 import struct
 from collections import namedtuple
+from dataclasses import dataclass
 from functools import lru_cache
 from io import SEEK_CUR, SEEK_SET, BufferedReader, BufferedWriter, BytesIO
 from logging import NullHandler, getLogger
-from typing import Iterable, Mapping, NamedTuple, Optional, Union
+from typing import Iterable, Mapping, Optional, Union
 
+from hgpaktool.buffers import FixedBuffer, chunked_file_reader
 from hgpaktool.compressors import Compressor
 from hgpaktool.constants import (
     DECOMPRESSED_CHUNK_SIZE,
@@ -17,16 +19,41 @@ from hgpaktool.constants import (
     PlatformLiteral,
     compression_map,
 )
-from hgpaktool.utils import determine_bins, reqChunkBytes
+from hgpaktool.utils import (
+    determine_bins,
+    hash_path,
+    normalise_path,
+    padding,
+    parse_manifest,
+    reqChunkBytes,
+    roundup,
+)
 
 
-class FILEINFO(NamedTuple):
+@dataclass
+class FileInfo:
+    file_hash_: bytes
     start_offset: int
     decompressed_size: int
 
+    @property
+    def file_hash(self) -> int:
+        return int.from_bytes(self.file_hash_, "big", signed=False)
 
-FILEINFO_FMT = "<16x2Q"
+    def values(self):
+        return (self.file_hash_, self.start_offset, self.decompressed_size)
+
+    def __str__(self):
+        return (
+            f"Hash: 0x{self.file_hash:X}, offset: 0x{self.start_offset:X}, "
+            f"decompressed size: 0x{self.decompressed_size:X}"
+        )
+
+
+FILEINFO_FMT = "<16s2Q"
 CHUNKINFO = namedtuple("CHUNKINFO", ["size", "offset"])
+
+HGPAKFMT_VERSION = 2
 
 
 logger = getLogger(__name__)
@@ -51,7 +78,7 @@ class PackedFile:
     @property
     def filename_hash(self):
         # This hash is the md5 hash of the name.
-        return hashlib.md5(self.path.encode()).digest()
+        return hash_path(self.path)
 
     @property
     def in_chunks(self) -> tuple[int, int]:
@@ -87,52 +114,74 @@ class PackedFile:
 
 class HGPakHeader:
     def __init__(self):
-        self.version = None
-        self.fileCount = 0
+        self.version = HGPAKFMT_VERSION
+        self.file_count = 0
         self.chunk_count = 0
         self.is_compressed = False
-        self.dataOffset = 0
+        self.data_offset = 0
 
     def read(self, fobj: BufferedReader):
         fobj.seek(0, SEEK_SET)
         if struct.unpack("5s", fobj.read(5))[0] != b"HGPAK":
             raise InvalidFileException(f"{fobj.name} does not appear to be a valid HGPAK file.")
         fobj.seek(8, SEEK_SET)
-        self.version, self.fileCount, self.chunk_count, self.is_compressed, self.dataOffset = struct.unpack(
+        self.version, self.file_count, self.chunk_count, self.is_compressed, self.data_offset = struct.unpack(
             "<QQQ?7xQ", fobj.read(0x28)
+        )
+        if self.version != HGPAKFMT_VERSION:
+            raise InvalidFileException(f"{fobj.name} does not appear to be a valid HGPAK file.")
+
+    def write(self, fobj: BufferedWriter):
+        # First, write the magic
+        fobj.write(struct.pack("<5s3x", b"HGPAK"))
+        fobj.write(
+            struct.pack(
+                "<QQQ?7xQ",
+                self.version,
+                self.file_count,
+                self.chunk_count,
+                self.is_compressed,
+                self.data_offset,
+            )
         )
 
     def __str__(self):
         return (
             f"HGPak Header:\n"
             f" Version {self.version}\n"
-            f" Files: {self.fileCount}\n"
+            f" Files: {self.file_count}\n"
             f" Chunks: {self.chunk_count}\n"
             f" is Compressed: {self.is_compressed}\n"
-            f" Data offset: 0x{self.dataOffset:X}\n"
+            f" Data offset: 0x{self.data_offset:X}\n"
         )
 
 
 class HGPakFileIndex:
     def __init__(self):
-        self.fileInfo: list[FILEINFO] = []
+        self.fileInfo: list[FileInfo] = []
 
-    def read(self, fileCount: int, fobj: BufferedReader, n: int = -1):
+    def read(self, file_count: int, fobj: BufferedReader, n: int = -1):
         """Read up to n entries from the file index. If n is -1 it will read all."""
-        for i in range(fileCount):
+        for i in range(file_count):
             if n != -1 and i >= n:
                 return
-            finf = FILEINFO(*struct.unpack(FILEINFO_FMT, fobj.read(0x20)))
+            finf = FileInfo(*struct.unpack(FILEINFO_FMT, fobj.read(0x20)))
             self.fileInfo.append(finf)
 
     def write(self, fobj: BufferedWriter):
         for finf in self.fileInfo:
-            fobj.write(struct.pack(FILEINFO_FMT, *finf._asdict().values()))
+            fobj.write(struct.pack(FILEINFO_FMT, *finf.values()))
+
+    def __str__(self):
+        res = "File Index\n----------\n"
+        res += "\n".join([str(finf) for finf in self.fileInfo])
+        return res
 
 
 class HGPakChunkIndex:
+    chunk_sizes: tuple[int]
+
     def __init__(self):
-        self.chunk_sizes: tuple[int] = tuple()
         self.chunk_offset: list[int] = []
 
     def read(self, chunk_count: int, fobj: BufferedReader):
@@ -168,6 +217,10 @@ class HGPAKFile:
             self.fobj.close()
 
     @property
+    def pak_name(self) -> str:
+        return op.basename(self.fpath)
+
+    @property
     def _extractor_function(self):
         if self.header.is_compressed:
             return self._extract_file_compressed
@@ -191,16 +244,16 @@ class HGPAKFile:
         if self.fobj is None:
             raise Exception("HPAKFile has no initialised fobj")
         self.header.read(self.fobj)
-        self.fileIndex.read(self.header.fileCount, self.fobj)
+        self.fileIndex.read(self.header.file_count, self.fobj)
         if self.header.is_compressed is False:
             # We only need to read the filename data and then return.
-            self.fobj.seek(self.header.dataOffset, SEEK_SET)
+            self.fobj.seek(self.header.data_offset, SEEK_SET)
             filename_data = self.fobj.read(self.fileIndex.fileInfo[0].decompressed_size)
             self.filenames = [
                 x.decode()
                 for x in filename_data[: self.fileIndex.fileInfo[0].decompressed_size]
-                .rstrip(b"\x0d\x0a")
-                .split(b"\x0d\x0a")
+                .rstrip(b"\r\n")
+                .split(b"\r\n")
             ]
             for i, fname in enumerate(self.filenames):
                 if fname:
@@ -213,7 +266,7 @@ class HGPAKFile:
         # Finally, we should now be at the start of the compressed data.
         # Instead of reading it all into a buffer. We'll just jump over to
         # get the offsets for easier reading later.
-        self.fobj.seek(self.header.dataOffset, SEEK_SET)
+        self.fobj.seek(self.header.data_offset, SEEK_SET)
         for i, size in enumerate(self.chunkIndex.chunk_sizes):
             # Set the offset.
             self.chunkIndex.chunk_offset.append(self.fobj.tell())
@@ -236,15 +289,15 @@ class HGPAKFile:
         self.filenames = [
             x.decode()
             for x in first_chunks[: self.fileIndex.fileInfo[0].decompressed_size]
-            .rstrip(b"\x0d\x0a")
-            .split(b"\x0d\x0a")
+            .rstrip(b"\r\n")
+            .split(b"\r\n")
         ]
-        assert len(self.filenames) == self.header.fileCount - 1, "file count mismatch"
+        assert len(self.filenames) == self.header.file_count - 1, "file count mismatch"
         for i, fname in enumerate(self.filenames):
             if fname:
                 finf = self.fileIndex.fileInfo[i + 1]
                 self.files[fname] = PackedFile(
-                    finf.start_offset - self.header.dataOffset, finf.decompressed_size, fname
+                    finf.start_offset - self.header.data_offset, finf.decompressed_size, fname
                 )
 
     @lru_cache(maxsize=256)
@@ -373,6 +426,7 @@ class HGPAKFile:
         filters: Union[list[str], str, None] = None,
         upper: bool = False,
         max_bytes: int = -1,
+        write_manifest: bool = False,
     ) -> int:
         """Unpack the contained files to the specified destination
 
@@ -386,9 +440,14 @@ class HGPAKFile:
             This can also just be a single string in which case just this file will be unpacked.
         upper:
             If True, file names will be normalised to upper case.
+            Note: This setting will be ignored if ``write_manifest`` is True.
         max_bytes:
             Maximum number of bytes to unpack per-file. If this is -1 (the default) it will extract the entire
             file.
+        write_manifest:
+            Whether or not to write the manifest for the pak to disk.
+            This is required if you want to repack the archive.
+            This file will be written at the top level of the extraction directory.
 
         Returns
         -------
@@ -399,13 +458,20 @@ class HGPAKFile:
         if len(files) == 0:
             return 0
 
+        if upper and write_manifest:
+            logger.warning(
+                "`upper` and `write_manifest` arguments are both set to True. This combination is not valid."
+                " The value for `upper` will be ignored."
+            )
+
         # Loop over the files to extract their contained data.
         i = 0
         func = self._extractor_function
         for fpath in files:
             _export_path, fname = op.split(fpath)
             dir_ = op.join(dest, _export_path)
-            if upper is True:
+            # If we are writing the manifest, ignore the upper flag.
+            if upper and not write_manifest:
                 dir_ = op.join(dest, _export_path.upper())
                 fname = fname.upper()
             if dir_:
@@ -418,6 +484,12 @@ class HGPAKFile:
                     f.write(chunk)
 
             i += 1
+
+        if write_manifest:
+            with open(op.join(dest, f"{self.pak_name}.manifest"), "w") as f:
+                for fname in files:
+                    f.write(fname + "\r\n")
+
         return i
 
     def _extract_file_compressed(self, fpath: str, max_bytes: int = -1) -> Iterable[bytes]:
@@ -494,6 +566,111 @@ class HGPAKFile:
             if (rem := extract_size % DECOMPRESSED_CHUNK_SIZE) != 0:
                 yield self.fobj.read(rem)
 
-    def pack(self):
-        # Implement later...
-        raise NotImplementedError("Re-packing support currently not enabled")
+    def _pack_files(
+        self,
+        filepaths: list[str],
+        root_dir: Union[str, os.PathLike[str]],
+        pak_fpath: Union[str, os.PathLike[str]],
+        compress: bool = True,
+    ):
+        """Pack the provided files.
+        The first file MUST be a .manifest file containing a list of the files in the .pak file.
+        Note that since this is an internal method this will not be validated."""
+        fullpaths: list[str] = []
+
+        # Loop over the filepaths and get their name hashes and sizes.
+        for fpath in filepaths:
+            realpath = op.realpath(op.join(root_dir, fpath))
+            fullpaths.append(realpath)
+            self.fileIndex.fileInfo.append(FileInfo(hash_path(fpath), 0, os.stat(realpath).st_size))
+        file_count = len(self.fileIndex.fileInfo)
+
+        # Determine the offsets of each file in uncompressed space.
+        curr_total_data_size = 0
+        for finfo in self.fileIndex.fileInfo:
+            finfo.start_offset = curr_total_data_size
+            curr_total_data_size += roundup(finfo.decompressed_size)
+
+        # Now that we have the total uncompressed data, we may determine the total number of chunks.
+        chunk_count = determine_bins(curr_total_data_size, DECOMPRESSED_CHUNK_SIZE)
+
+        # Now that we know the total chunk count and file count, we know how big the "pre-data" data is.
+        data_offset = 0x30 + 0x20 * file_count + compress * 0x8 * chunk_count
+        # Also add padding so that the data always starts at an offset which is a
+        # multiple of 0x10
+        extra_padding = padding(data_offset)
+        data_offset += extra_padding
+
+        # Fixup the offsets now that we know the data offset.
+        for finfo in self.fileIndex.fileInfo:
+            finfo.start_offset += data_offset
+
+        # Write the data back to the file.
+        self.header.file_count = file_count
+        self.header.chunk_count = chunk_count
+        self.header.is_compressed = compress
+        self.header.data_offset = data_offset
+
+        with open(pak_fpath, "wb") as f:
+            self.header.write(f)
+            self.fileIndex.write(f)
+            # Reserve space for the compressed chunk sizes if the file is compressed.
+            chunk_index_offset = f.tell()
+            if compress:
+                f.write(b"\x00" * (8 * chunk_count + extra_padding))
+
+            sub_buffer = FixedBuffer(f, self.compressor, compress)
+
+            # Write all the files into the pak.
+            for _data in chunked_file_reader(fullpaths):
+                sub_buffer.add_bytes(_data)
+            # Finally, call write_to_main_buffer to flush the last block to the file.
+            sub_buffer.write_to_main_buffer()
+
+            if compress:
+                f.seek(chunk_index_offset, SEEK_SET)
+                # Get the compressed block sizes and write to the chunk info section.
+                for chunk_size in sub_buffer.compressed_block_sizes:
+                    f.write(struct.pack("<Q", chunk_size))
+
+    @classmethod
+    def repack(
+        cls,
+        manifest: Union[str, os.PathLike[str]],
+        out_fpath: Optional[Union[str, os.PathLike[str]]] = None,
+        compress: bool = True,
+        platform: Union[Platform, PlatformLiteral] = Platform.WINDOWS,
+    ):
+        """Repack the provided manifest file
+
+        Parameters
+        ----------
+        manifest:
+            The path to the manifest file to be repacked.
+            This file should be the original file which was unpacked by HGPAKTool.
+            If this file is modified it MUST use CRLF line endings and have a trailing line ending.
+        out_fpath:
+            The destination pak path. If not provided this will fallback to the name of the pak based on the
+            manifest and will be written to the same directory as the manifest.
+        compress:
+            Whether or not to compress the data contained within the pak file.
+            Compression format will depend on what platform is provided.
+        platform:
+            The target platform for the pak file.
+        """
+        # Generate the required paths based on the manifest file. It's basically our "source of truth"
+        real_manifest_path = op.realpath(manifest)
+        manifest_dir = op.dirname(real_manifest_path)
+        manifest_name = op.basename(manifest)
+        pak_name, _ = op.splitext(manifest_name)
+        pak = cls(pak_name, platform=platform)
+        # Parse the manifest so that we have a file list:
+        file_list = parse_manifest(manifest)
+        if out_fpath is None:
+            out_fpath = op.join(manifest_dir, pak_name)
+        pak._pack_files(
+            [normalise_path(op.basename(manifest)), *file_list],
+            manifest_dir,
+            out_fpath,
+            compress,
+        )

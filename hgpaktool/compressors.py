@@ -45,12 +45,15 @@ class Compressor:
 
     def compress(self, buffer: memoryview) -> bytes:
         if self.compression == Compression.ZSTD:
-            raise NotImplementedError("Recompression not supported on windows yet.")
-            # self.compressor = zstd.ZstdCompressor()
-            # return self.compressor.compress(
-            #     buffer,
-            #     store_size=False,
-            # )
+            self.compressor = zstd.ZstdCompressor(
+                compression_params=zstd.ZstdCompressionParameters(
+                    compression_level=5,
+                    write_content_size=True,
+                ),
+            )
+            return self.compressor.compress(
+                buffer,
+            )
         elif self.compression == Compression.LZ4:
             self.compressor = cast(lz4.block, self.compressor)
             return self.compressor.compress(
@@ -64,7 +67,7 @@ class Compressor:
     def _decompress_windows(self, data: bytes) -> Optional[bytes]:
         self.compressor = cast(zstd.ZstdDecompressor, self.compressor)
         try:
-            return self.compressor.decompress(data, max_output_size=self.decompressed_chunk_size)
+            return self.compressor.decompress(data)
         except zstd.ZstdError:
             if len(data) == self.decompressed_chunk_size:
                 # In this case the block was just not compressed. Return it.
