@@ -1,32 +1,16 @@
-import os
 import os.path as op
 import shutil
 from pathlib import Path
 from typing import Literal
 
 import pytest
+from utils import get_files, plat_map
 
 from hgpaktool import HGPAKFile
 from hgpaktool.api import InvalidFileException
 from hgpaktool.utils import normalise_path, parse_manifest
 
 DATA_DIR = op.join(op.dirname(__file__), "data")
-
-
-# TODO: Add switch?
-plat_map = {
-    "windows": "pc",
-    "linux": "pc",
-    "mac": "macos",
-}
-
-
-def get_files(fpath: os.PathLike) -> list[str]:
-    file_list = []
-    for root, _, files in os.walk(fpath):
-        for file in files:
-            file_list.append(os.path.join(root, file))
-    return file_list
 
 
 @pytest.mark.parametrize("platform", ("windows", "mac", "linux"))

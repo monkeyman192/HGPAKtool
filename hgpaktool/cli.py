@@ -10,7 +10,6 @@ import sys
 import time
 from typing import Literal
 
-import hgpaktool.constants
 from hgpaktool import __version__
 from hgpaktool.api import HGPAKFile, InvalidFileException
 from hgpaktool.constants import Platform, platform_map
@@ -265,9 +264,8 @@ def run():
             logger.error("You need to install lz4 for this code to work. Please run `pip install lz4`")
             sys.exit(1)
     elif args.platform == Platform.SWITCH:
-        # Decompressed chunk size on switch is 128kb
-        hgpaktool.constants.DECOMPRESSED_CHUNK_SIZE = 0x20000
-        hgpaktool.constants.CLEAN_BYTES = b"\x00" * hgpaktool.constants.DECOMPRESSED_CHUNK_SIZE  # noqa
+        # Currently no need to do check anything for switch. Can probably do a check for oodle at some point.
+        pass
 
     t1 = time.perf_counter()
 
