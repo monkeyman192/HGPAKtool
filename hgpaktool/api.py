@@ -13,7 +13,6 @@ from typing import Iterable, Mapping, Optional, Union
 from hgpaktool.buffers import FixedBuffer, chunked_file_reader
 from hgpaktool.compressors import Compressor
 from hgpaktool.constants import (
-    DECOMPRESSED_CHUNK_SIZE,
     Compression,
     Platform,
     PlatformLiteral,
@@ -67,12 +66,13 @@ class InvalidFileException(Exception):
 class PackedFile:
     """This represents a packed file within the HGPAK file"""
 
-    __slots__ = ("offset", "size", "path", "_in_chunks")
+    __slots__ = ("offset", "size", "path", "_in_chunks", "_decompressed_chunk_size")
 
-    def __init__(self, offset: int, size: int, path: str):
+    def __init__(self, offset: int, size: int, path: str, decompressed_chunk_size: int):
         self.offset = offset
         self.size = size
         self.path = path
+        self._decompressed_chunk_size = decompressed_chunk_size
         self._in_chunks = None
 
     @property
@@ -84,23 +84,23 @@ class PackedFile:
     def in_chunks(self) -> tuple[int, int]:
         """Determine which chunks the file is contained in."""
         if self._in_chunks is None:
-            if self.offset % DECOMPRESSED_CHUNK_SIZE == 0:
-                start_chunk = determine_bins(self.offset, DECOMPRESSED_CHUNK_SIZE)
+            if self.offset % self._decompressed_chunk_size == 0:
+                start_chunk = determine_bins(self.offset, self._decompressed_chunk_size)
             else:
-                start_chunk = determine_bins(self.offset, DECOMPRESSED_CHUNK_SIZE) - 1
-            end_chunk = determine_bins(self.offset + self.size, DECOMPRESSED_CHUNK_SIZE) - 1
+                start_chunk = determine_bins(self.offset, self._decompressed_chunk_size) - 1
+            end_chunk = determine_bins(self.offset + self.size, self._decompressed_chunk_size) - 1
             self._in_chunks = (start_chunk, end_chunk)
         return self._in_chunks
 
     @property
     def first_chunk_offset(self):
         """The offset within the first chunk that the file starts at."""
-        return self.offset % DECOMPRESSED_CHUNK_SIZE
+        return self.offset % self._decompressed_chunk_size
 
     @property
     def last_chunk_offset_end(self):
         """The offset within the last chunk where the file ends."""
-        return (self.offset + self.size) % DECOMPRESSED_CHUNK_SIZE
+        return (self.offset + self.size) % self._decompressed_chunk_size
 
     def __str__(self):
         return (
@@ -217,6 +217,10 @@ class HGPAKFile:
             self.fobj.close()
 
     @property
+    def _decompressed_chunk_size(self) -> int:
+        return self.compressor.decompressed_chunk_size
+
+    @property
     def pak_name(self) -> str:
         return op.basename(self.fpath)
 
@@ -258,7 +262,12 @@ class HGPAKFile:
             for i, fname in enumerate(self.filenames):
                 if fname:
                     finf = self.fileIndex.fileInfo[i + 1]
-                    self.files[fname] = PackedFile(finf.start_offset, finf.decompressed_size, fname)
+                    self.files[fname] = PackedFile(
+                        finf.start_offset,
+                        finf.decompressed_size,
+                        fname,
+                        self._decompressed_chunk_size,
+                    )
             return
 
         if self.header.is_compressed:
@@ -276,7 +285,7 @@ class HGPAKFile:
 
         # Determine how many chunks to decompress to read the filenames.
         chunks_for_filenames = determine_bins(
-            self.fileIndex.fileInfo[0].decompressed_size, DECOMPRESSED_CHUNK_SIZE
+            self.fileIndex.fileInfo[0].decompressed_size, self._decompressed_chunk_size
         )
 
         # Decompress these chunks to read the filenames.
@@ -297,7 +306,10 @@ class HGPAKFile:
             if fname:
                 finf = self.fileIndex.fileInfo[i + 1]
                 self.files[fname] = PackedFile(
-                    finf.start_offset - self.header.data_offset, finf.decompressed_size, fname
+                    finf.start_offset - self.header.data_offset,
+                    finf.decompressed_size,
+                    fname,
+                    self._decompressed_chunk_size,
                 )
 
     @lru_cache(maxsize=256)
@@ -555,15 +567,15 @@ class HGPAKFile:
             extract_size = max_bytes
 
         # Read each of the chunks
-        chunks = extract_size // DECOMPRESSED_CHUNK_SIZE
+        chunks = extract_size // self._decompressed_chunk_size
         if not chunks:
             yield self.fobj.read(extract_size)
         else:
             # First, read all the full chunk data.
             for _ in range(chunks):
-                yield self.fobj.read(DECOMPRESSED_CHUNK_SIZE)
+                yield self.fobj.read(self._decompressed_chunk_size)
             # Then finally, read the remainder is there is any.
-            if (rem := extract_size % DECOMPRESSED_CHUNK_SIZE) != 0:
+            if (rem := extract_size % self._decompressed_chunk_size) != 0:
                 yield self.fobj.read(rem)
 
     def _pack_files(
@@ -592,7 +604,7 @@ class HGPAKFile:
             curr_total_data_size += roundup(finfo.decompressed_size)
 
         # Now that we have the total uncompressed data, we may determine the total number of chunks.
-        chunk_count = determine_bins(curr_total_data_size, DECOMPRESSED_CHUNK_SIZE)
+        chunk_count = determine_bins(curr_total_data_size, self._decompressed_chunk_size)
 
         # Now that we know the total chunk count and file count, we know how big the "pre-data" data is.
         data_offset = 0x30 + 0x20 * file_count + compress * 0x8 * chunk_count
@@ -622,7 +634,7 @@ class HGPAKFile:
             sub_buffer = FixedBuffer(f, self.compressor, compress)
 
             # Write all the files into the pak.
-            for _data in chunked_file_reader(fullpaths):
+            for _data in chunked_file_reader(fullpaths, self._decompressed_chunk_size):
                 sub_buffer.add_bytes(_data)
             # Finally, call write_to_main_buffer to flush the last block to the file.
             sub_buffer.write_to_main_buffer()
