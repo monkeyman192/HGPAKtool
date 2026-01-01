@@ -289,17 +289,15 @@ class HGPAKFile:
         )
 
         # Decompress these chunks to read the filenames.
-        first_chunks = b""
+        manifest = b""
         for i in range(chunks_for_filenames):
             if (_chunk := self._decompress_chunk(i)) is not None:
-                first_chunks += _chunk
+                manifest += _chunk
             else:
                 logger.error(f"There was an error reading the filename section for {self.fpath}")
         self.filenames = [
             x.decode()
-            for x in first_chunks[: self.fileIndex.fileInfo[0].decompressed_size]
-            .rstrip(b"\r\n")
-            .split(b"\r\n")
+            for x in manifest[: self.fileIndex.fileInfo[0].decompressed_size].rstrip(b"\r\n").split(b"\r\n")
         ]
         assert len(self.filenames) == self.header.file_count - 1, "file count mismatch"
         for i, fname in enumerate(self.filenames):
@@ -498,9 +496,9 @@ class HGPAKFile:
             i += 1
 
         if write_manifest:
-            with open(op.join(dest, f"{self.pak_name}.manifest"), "w") as f:
+            with open(op.join(dest, f"{self.pak_name}.manifest"), "wb") as f:
                 for fname in files:
-                    f.write(fname + "\r\n")
+                    f.write(fname.encode() + b"\r\n")
 
         return i
 

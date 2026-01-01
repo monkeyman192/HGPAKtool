@@ -47,7 +47,7 @@ class Compressor:
         if self.compression == Compression.ZSTD:
             self.compressor = zstd.ZstdCompressor(
                 compression_params=zstd.ZstdCompressionParameters(
-                    compression_level=5,
+                    compression_level=14,
                     write_content_size=True,
                 ),
             )
@@ -58,7 +58,9 @@ class Compressor:
             self.compressor = cast(lz4.block, self.compressor)
             return self.compressor.compress(
                 buffer,
+                mode="high_compression",
                 store_size=False,
+                compression=10,
             )
         else:
             self.compressor = cast(OodleCompressor, self.compressor)
