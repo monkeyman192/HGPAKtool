@@ -6,9 +6,9 @@ import struct
 from collections import namedtuple
 from dataclasses import dataclass
 from functools import lru_cache
-from io import SEEK_CUR, SEEK_SET, BufferedReader, BufferedWriter, BytesIO
+from io import SEEK_SET, BufferedReader, BufferedWriter, BytesIO
 from logging import NullHandler, getLogger
-from typing import Iterable, Mapping, Optional, Union
+from typing import Iterable, Literal, Mapping, Optional, Union, overload
 
 from hgpaktool.buffers import FixedBuffer, chunked_file_reader
 from hgpaktool.compressors import Compressor
@@ -187,6 +187,13 @@ class HGPakChunkIndex:
     def read(self, chunk_count: int, fobj: BufferedReader):
         self.chunk_sizes = struct.unpack(f"<{chunk_count}Q", fobj.read(8 * chunk_count))
 
+    def calculate_chunk_offsets(self, start: int):
+        # Calculate the chunk offsets based on sizes and initial start location.
+        curr_pos = start
+        for size in self.chunk_sizes:
+            self.chunk_offset.append(curr_pos)
+            curr_pos += reqChunkBytes(size)
+
 
 class HGPAKFile:
     fobj: BufferedReader
@@ -272,16 +279,7 @@ class HGPAKFile:
 
         if self.header.is_compressed:
             self.chunkIndex.read(self.header.chunk_count, self.fobj)
-        # Finally, we should now be at the start of the compressed data.
-        # Instead of reading it all into a buffer. We'll just jump over to
-        # get the offsets for easier reading later.
-        self.fobj.seek(self.header.data_offset, SEEK_SET)
-        for i, size in enumerate(self.chunkIndex.chunk_sizes):
-            # Set the offset.
-            self.chunkIndex.chunk_offset.append(self.fobj.tell())
-            # Then jump forward the required amount.
-            if i != self.header.chunk_count:
-                self.fobj.seek(reqChunkBytes(size), SEEK_CUR)
+        self.chunkIndex.calculate_chunk_offsets(self.header.data_offset)
 
         # Determine how many chunks to decompress to read the filenames.
         chunks_for_filenames = determine_bins(
@@ -389,6 +387,106 @@ class HGPAKFile:
                             chunk = chunk[:0x10] + b"\x00" * 8 + chunk[0x18:]
                 _hash.update(chunk)
             yield (fpath, _hash.hexdigest().upper())
+
+    @overload
+    def extract_specific(self, filepaths: list[str], as_buffer: Literal[True]) -> Mapping[str, BytesIO]: ...
+
+    @overload
+    def extract_specific(self, filepaths: list[str], as_buffer: Literal[False]) -> Mapping[str, bytes]: ...
+
+    @overload
+    def extract_specific(self, filepaths: str, as_buffer: Literal[True]) -> BytesIO: ...
+
+    @overload
+    def extract_specific(self, filepaths: str, as_buffer: Literal[False]) -> bytes: ...
+
+    def extract_specific(
+        self,
+        filepaths: Union[list[str], str],
+        as_buffer: bool = True,
+    ) -> Union[Mapping[str, Union[bytes, BytesIO]], Union[bytes, BytesIO]]:
+        """Extract a specific subset of the files in a pak file.
+        This is optimised to only get the info required to extract these files, so any extra metadata that
+        we'd normally be able to get from the instance will not be correct.
+        Only use this when you have a fixed set of files to extract with concrete filepaths."""
+        if isinstance(filepaths, list):
+            fname_hash_map = {hash_path(filepath): filepath for filepath in filepaths}
+        else:
+            fname_hash_map = {hash_path(filepaths): filepaths}
+        # Go through the process semi-manually, skipping anything we don't need.
+        files_to_read = len(fname_hash_map)
+        files_read = 0
+        file_infos: dict[str, FileInfo] = {}
+        out_data: dict[str, Union[bytes, BytesIO]] = {}
+
+        try:
+            self.fobj = open(self.fpath, "rb")
+            self.header = HGPakHeader()
+            self.header.read(self.fobj)
+            # Read the file index, but only load data if it has the same hash.
+            for _ in range(self.header.file_count):
+                if files_read == files_to_read:
+                    break
+                _hash = struct.unpack_from("<16s", buffer=self.fobj.read(0x10))[0]
+                if _hash in fname_hash_map:
+                    fname = fname_hash_map[_hash]
+                    finf = FileInfo(_hash, *struct.unpack("<2Q", self.fobj.read(0x10)))
+                    file_infos[fname] = finf
+                    files_read += 1
+                else:
+                    self.fobj.seek(0x10, 1)
+
+            max_chunk_index = 0
+
+            # Populate the `self.files` object with just the files we care about.
+            for fname, finf in file_infos.items():
+                pf = PackedFile(
+                    finf.start_offset - self.header.data_offset,
+                    finf.decompressed_size,
+                    fname,
+                    self._decompressed_chunk_size,
+                )
+                max_chunk_index = max(max_chunk_index, pf.in_chunks[1] + 1)
+                self.files[fname] = pf
+            if not max_chunk_index:
+                max_chunk_index = self.header.chunk_count
+
+            # Jump to the start of the chunk index
+            self.fobj.seek(0x30 + self.header.file_count * 0x20, 0)
+            if self.header.is_compressed:
+                self.chunkIndex.read(max_chunk_index, self.fobj)
+            self.chunkIndex.calculate_chunk_offsets(self.header.data_offset)
+
+            # Extract the actual data.
+            # Depending on whether we get just one filepath to extract or more, we'll either add to the dict
+            # or return immediately.
+            func = self._extractor_function
+            for fpath in self.files:
+                buffer = BytesIO()
+                for chunk in func(fpath):
+                    buffer.write(chunk)
+                if buffer.tell() > 0:
+                    if as_buffer:
+                        if isinstance(filepaths, str):
+                            return buffer
+                        else:
+                            out_data[fpath] = buffer
+                    else:
+                        if isinstance(filepaths, str):
+                            return buffer.getvalue()
+                        else:
+                            out_data[fpath] = buffer.getvalue()
+                else:
+                    continue
+
+            if not isinstance(filepaths, str):
+                return out_data
+            else:
+                # If we get here, we never found the file so we'll return empty bytes.
+                logger.error(f"Unable to find the file {filepaths!r} in {self.fpath}")
+                return b""
+        finally:
+            self.fobj.close()
 
     def extract(
         self,
