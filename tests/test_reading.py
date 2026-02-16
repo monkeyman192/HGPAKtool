@@ -1,5 +1,6 @@
 import os.path as op
 import shutil
+from io import BytesIO
 from pathlib import Path
 from typing import Literal
 
@@ -16,6 +17,7 @@ DATA_DIR = op.join(op.dirname(__file__), "data")
 @pytest.mark.parametrize("platform", ("windows", "mac", "linux"))
 def test_unpack(tmp_path: Path, platform: Literal["windows", "mac", "linux"]):
     with HGPAKFile(op.join(DATA_DIR, f"NMSARC.MeshPlanetSKY.{platform}.pak"), platform) as pak:
+        print(pak.filenames)
         assert len(pak.filenames) == 6
         # Extract the files to a temporary directory and analyse it
         pak.unpack(tmp_path)
@@ -80,6 +82,41 @@ def test_filtered_extraction(platform: Literal["windows", "mac", "linux"]):
             )
             == 1
         )
+
+
+@pytest.mark.parametrize("platform", ("windows", "mac", "linux"))
+@pytest.mark.parametrize("as_buffer", (True, False))
+def test_extract_specific_single_file(platform: Literal["windows", "mac", "linux"], as_buffer: bool):
+    pak = HGPAKFile(op.join(DATA_DIR, f"NMSARC.MeshPlanetSKY.{platform}.pak"), platform)
+    fname = f"models/planets/sky/skysphere.geometry.mbin.{plat_map[platform]}"
+    data = pak.extract_specific(fname, as_buffer)
+    if as_buffer:
+        assert isinstance(data, BytesIO)
+        assert len(data.getvalue()) > 0
+    else:
+        assert isinstance(data, bytes)
+        assert len(data) > 0
+
+
+@pytest.mark.parametrize("platform", ("windows", "mac", "linux"))
+@pytest.mark.parametrize("as_buffer", (True, False))
+def test_extract_specific_multi_file(platform: Literal["windows", "mac", "linux"], as_buffer: bool):
+    pak = HGPAKFile(op.join(DATA_DIR, f"NMSARC.MeshPlanetSKY.{platform}.pak"), platform)
+    fnames = [
+        f"models/planets/sky/skysphere.geometry.mbin.{plat_map[platform]}",
+        f"models/planets/sky/rainbowplane.geometry.mbin.{plat_map[platform]}",
+    ]
+    data = pak.extract_specific(fnames, as_buffer)
+    assert isinstance(data, dict)
+    assert set(data.keys()) == set(fnames)
+    if as_buffer:
+        for blob in data.values():
+            assert isinstance(blob, BytesIO)
+            assert len(blob.getvalue()) > 0
+    else:
+        for blob in data.values():
+            assert isinstance(blob, bytes)
+            assert len(blob) > 0
 
 
 def test_invalid_pak():
