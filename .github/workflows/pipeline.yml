@@ -87,6 +87,7 @@ jobs:
         os: [
           {name: 'Ubuntu-latest'},
           {name: 'Windows-2025'},
+          {name: 'macos-latest'},
         ]
     needs:
       - lint_testing
@@ -107,6 +108,9 @@ jobs:
         run: uv run pyinstaller hgpaktool/cli.py --onefile --icon .\discovery3.ico --name hgpaktool
       - name: Build HGPAKtool linux binary
         if: matrix.os.name == 'Ubuntu-latest'
+        run: uv run pyinstaller hgpaktool/cli.py --onefile --name hgpaktool
+      - name: Build HGPAKtool macOS binary
+        if: matrix.os.name == 'macos-latest'
         run: uv run pyinstaller hgpaktool/cli.py --onefile --name hgpaktool
       - name: Upload binary
         uses: actions/upload-artifact@v4
@@ -157,13 +161,19 @@ jobs:
           mv bin/binary-Ubuntu-latest/hgpaktool bin/hgpaktool
           chmod u=rwx,g=rx,o=rx bin/hgpaktool
           mv bin/binary-Windows-2025/hgpaktool.exe bin/hgpaktool.exe
-      - name: Compress binaries
+          mv bin/binary-macOS/hgpaktool.exe macbin/hgpaktool
+      - name: Compress binaries win/linux
         run: |
           cd bin
           gzip -9 hgpaktool
           mv hgpaktool.gz ../hgpaktool-x86_64-unknown-linux.gz
           zip hgpaktool-x86_64-pc-windows.zip hgpaktool.exe
           mv hgpaktool-x86_64-pc-windows.zip ../hgpaktool-x86_64-pc-windows.zip
+      - name: Compress macOS binary
+        run: |
+          cd macbin
+          zip hgpaktool-macOS.zip hgpaktool
+          mv hgpaktool-macOS.zip ../hgpaktool-macOS.zip
       - name: Publish binaries to github release
         uses: softprops/action-gh-release@v2
         with:
@@ -172,6 +182,7 @@ jobs:
           files: |
             hgpaktool-x86_64-unknown-linux.gz
             hgpaktool-x86_64-pc-windows.zip
+            hgpaktool-macOS.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
